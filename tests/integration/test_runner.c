@@ -692,6 +692,153 @@ static void test_cas(void) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Phase 5 Tests — Coprocessor Interface                              */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Stub coprocessor state shared across Phase 5 tests.
+ */
+typedef struct {
+    bool execute_called;
+    u16  last_cmd;
+} StubCpState;
+
+static StubCpState g_stub_state;
+static M68020Coprocessor g_stub_cp;
+
+static void stub_execute(M68020Coprocessor *cp, M68020State *cpu, u16 cmd) {
+    StubCpState *s = (StubCpState *)cp->state;
+    s->execute_called = true;
+    s->last_cmd       = cmd;
+    cpu->D[5]         = 0xBEEFu;   /* marker: execute was dispatched */
+}
+static void stub_save(M68020Coprocessor *cp, M68020State *cpu, u32 addr) {
+    (void)cp; (void)cpu; (void)addr;
+}
+static void stub_restore(M68020Coprocessor *cp, M68020State *cpu, u32 addr) {
+    (void)cp; (void)cpu; (void)addr;
+}
+static bool stub_test_condition(M68020Coprocessor *cp, u8 cc) {
+    (void)cp;
+    return cc == 1u;   /* condition 1 = true; all others false */
+}
+
+static void init_stub_coproc(void) {
+    memset(&g_stub_state, 0, sizeof g_stub_state);
+    g_stub_cp.cpid           = 0;
+    g_stub_cp.execute        = stub_execute;
+    g_stub_cp.save           = stub_save;
+    g_stub_cp.restore        = stub_restore;
+    g_stub_cp.test_condition = stub_test_condition;
+    g_stub_cp.state          = &g_stub_state;
+}
+
+/*
+ * test_coproc_linef: Line F opcode with no coprocessor → VEC_LINE_F.
+ *
+ * VEC_LINE_F = vector 11, address = 0x002C.
+ * Handler at 0x0300 sets D7 = 0xAA, then ILLEGAL → STOP.
+ *
+ * 0xF000 is cpGEN for cpid=0, type=cpGEN.
+ * Because no coprocessor is attached, VEC_LINE_F fires immediately
+ * (no extension words consumed).
+ *
+ * Expected: D7 = 0xAA
+ */
+static void test_coproc_linef(void) {
+    printf("\n=== Test: Line F without coprocessor → VEC_LINE_F ===\n");
+
+    FlatBus bus_data;
+    memset(&bus_data, 0, sizeof bus_data);
+    uint8_t *m = bus_data.mem;
+
+    /* Reset vectors */
+    m[0] = 0x00; m[1] = 0x00; m[2] = 0x80; m[3] = 0x00;  /* SSP */
+    m[4] = 0x00; m[5] = 0x00; m[6] = 0x01; m[7] = 0x00;  /* PC  */
+    /* Vector 4 (illegal) → 0x0200 */
+    m[16] = 0x00; m[17] = 0x00; m[18] = 0x02; m[19] = 0x00;
+    /* Vector 11 (Line F, 0x002C) → 0x0300 */
+    m[0x2C] = 0x00; m[0x2D] = 0x00; m[0x2E] = 0x03; m[0x2F] = 0x00;
+
+    /* Code at 0x0100:
+     *   0xF0 0x00   — cpGEN cpid=0 (no cp → VEC_LINE_F) */
+    m[0x100] = 0xF0; m[0x101] = 0x00;
+    /* Unreachable after trap: */
+    m[0x102] = 0x4A; m[0x103] = 0xFC;  /* ILLEGAL */
+
+    /* Illegal handler at 0x0200: STOP #0x2700 */
+    m[0x200] = 0x4E; m[0x201] = 0x72; m[0x202] = 0x27; m[0x203] = 0x00;
+
+    /* Line F handler at 0x0300: MOVEQ #0x55, D7 then ILLEGAL */
+    m[0x300] = 0x7E; m[0x301] = 0x55;  /* MOVEQ #0x55, D7 */
+    m[0x302] = 0x4A; m[0x303] = 0xFC;  /* ILLEGAL          */
+
+    M68020BusInterface bus = {
+        .read = flat_read, .write = flat_write, .iack = flat_iack,
+        .reset_peripherals = NULL, .ctx = &bus_data
+    };
+    M68020State *cpu = m68020_create(&bus);
+    m68020_reset(cpu);
+    /* No coprocessor attached */
+    m68020_run(cpu, 10000);
+
+    u32 d7 = m68020_get_reg(cpu, REG_D7);
+    CHECK(d7 == 0x55u, "D7 = 0x55 (VEC_LINE_F handler reached)");
+
+    m68020_destroy(cpu);
+}
+
+/*
+ * test_coproc_gen: cpGEN with a stub coprocessor dispatches to execute().
+ *
+ * Code:
+ *   MOVEQ #0, D5              ; D5 = 0 (will be set by execute callback)
+ *   0xF0 0x00, 0x12 0x34     ; cpGEN cpid=0, cmd=0x1234
+ *   ILLEGAL
+ *
+ * The stub execute() sets D5 = 0xBEEF and records cmd = 0x1234.
+ * Expected: D5 = 0xBEEF, g_stub_state.last_cmd = 0x1234
+ */
+static void test_coproc_gen(void) {
+    printf("\n=== Test: cpGEN dispatches to execute() callback ===\n");
+
+    init_stub_coproc();
+
+    FlatBus bus_data;
+    memset(&bus_data, 0, sizeof bus_data);
+    uint8_t *m = bus_data.mem;
+
+    m[0] = 0x00; m[1] = 0x00; m[2] = 0x80; m[3] = 0x00;  /* SSP */
+    m[4] = 0x00; m[5] = 0x00; m[6] = 0x01; m[7] = 0x00;  /* PC  */
+    m[16] = 0x00; m[17] = 0x00; m[18] = 0x02; m[19] = 0x00; /* vec4 → 0x200 */
+
+    uint32_t p = 0x100;
+    m[p++] = 0x7A; m[p++] = 0x00;  /* MOVEQ #0, D5 */
+    /* cpGEN cpid=0 type=0: opword=0xF000, cmd=0x1234 */
+    m[p++] = 0xF0; m[p++] = 0x00;  /* opword  */
+    m[p++] = 0x12; m[p++] = 0x34;  /* command word */
+    m[p++] = 0x4A; m[p++] = 0xFC;  /* ILLEGAL */
+
+    m[0x200] = 0x4E; m[0x201] = 0x72; m[0x202] = 0x27; m[0x203] = 0x00;
+
+    M68020BusInterface bus = {
+        .read = flat_read, .write = flat_write, .iack = flat_iack,
+        .reset_peripherals = NULL, .ctx = &bus_data
+    };
+    M68020State *cpu = m68020_create(&bus);
+    m68020_reset(cpu);
+    m68020_attach_coprocessor(cpu, &g_stub_cp);
+    m68020_run(cpu, 10000);
+
+    u32 d5 = m68020_get_reg(cpu, REG_D5);
+    CHECK(d5 == 0xBEEFu,         "D5 = 0xBEEF (execute() callback fired)");
+    CHECK(g_stub_state.last_cmd == 0x1234u,
+          "execute() received cmd=0x1234");
+
+    m68020_destroy(cpu);
+}
+
+/* ------------------------------------------------------------------ */
 /* Main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -707,6 +854,8 @@ int main(void) {
     test_mulu_l();
     test_bfextu();
     test_cas();
+    test_coproc_linef();
+    test_coproc_gen();
 
     printf("\n=====================================\n");
     printf("Results: %d/%d passed", tests_passed, tests_run);
