@@ -80,6 +80,12 @@ static u32 handler_rte(M68020State *cpu, u16 opword) {
             /* 2 extra words (instruction PC) — discard */
             cpu->A[7] += 4;
             break;
+        case FRAME_FORMAT_B:
+            /* Format B: 46 words = 92 bytes total.
+             * We already popped fmt_word(2) + ret_pc(4) + saved_sr(2) = 8 bytes.
+             * Skip remaining 84 bytes of internal state. */
+            cpu->A[7] += 84;
+            break;
         default:
             /* Unknown format — format error exception */
             exception_process(cpu, VEC_FORMAT_ERR);

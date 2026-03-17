@@ -101,6 +101,7 @@ void exception_process(M68020State *cpu, u32 vector) {
     switch (vector) {
         case VEC_CHK:
         case VEC_TRAPV:
+        case VEC_TRACE:
         case VEC_ILLEGAL_INSN:
         case VEC_PRIVILEGE:
         case VEC_LINE_A:
@@ -130,6 +131,14 @@ void exception_process(M68020State *cpu, u32 vector) {
          */
         u32 return_pc;
         switch (vector) {
+            case VEC_TRACE:
+                /*
+                 * Trace exception fires BEFORE executing the traced instruction.
+                 * cpu->PC = address of that instruction (opword was consumed but not
+                 * dispatched). Return PC = that same address so RTE resumes it.
+                 */
+                return_pc = saved_pc;
+                break;
             case VEC_ILLEGAL_INSN:
             case VEC_LINE_A:
             case VEC_LINE_F:

@@ -338,6 +338,150 @@ static void test_move_immediate(void) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Phase 3 Tests                                                       */
+/* ------------------------------------------------------------------ */
+
+/*
+ * test_trapcc: Verify TRAPcc (68020) fires only when condition is true.
+ *
+ * Code:
+ *   MOVEQ #5, D0       ; D0 = 5
+ *   TRAPF              ; cc=F (always false) — must NOT trap
+ *   MOVEQ #10, D0      ; D0 = 10
+ *   TRAPT              ; cc=T (always true)  — MUST trap → 0x0300 handler
+ *   MOVEQ #99, D0      ; must NOT execute
+ *   ILLEGAL            ; must NOT execute
+ *
+ * TRAPV handler at 0x0300:
+ *   MOVEQ #0x55, D7   ; mark handler was reached
+ *   ILLEGAL           ; terminate via illegal-insn handler → STOP
+ *
+ * Expected: D0=10, D7=0x55
+ */
+static void test_trapcc(void) {
+    printf("\n=== Test: TRAPcc (68020) ===\n");
+
+    FlatBus bus_data;
+    memset(&bus_data, 0, sizeof bus_data);
+    uint8_t *m = bus_data.mem;
+
+    /* Reset vectors */
+    m[0] = 0x00; m[1] = 0x00; m[2] = 0x80; m[3] = 0x00;  /* SSP */
+    m[4] = 0x00; m[5] = 0x00; m[6] = 0x01; m[7] = 0x00;  /* PC  */
+    /* Vector 4 (illegal) → 0x0200 */
+    m[16] = 0x00; m[17] = 0x00; m[18] = 0x02; m[19] = 0x00;
+    /* Vector 7 (TRAPV) → 0x0300 */
+    m[28] = 0x00; m[29] = 0x00; m[30] = 0x03; m[31] = 0x00;
+
+    /* Code at 0x0100 */
+    m[0x100] = 0x70; m[0x101] = 0x05;  /* MOVEQ #5, D0      */
+    m[0x102] = 0x51; m[0x103] = 0xFC;  /* TRAPF (cc=F)      */
+    m[0x104] = 0x70; m[0x105] = 0x0A;  /* MOVEQ #10, D0     */
+    m[0x106] = 0x50; m[0x107] = 0xFC;  /* TRAPT (cc=T)      */
+    m[0x108] = 0x70; m[0x109] = 0x63;  /* MOVEQ #99, D0 (should not run) */
+    m[0x10A] = 0x4A; m[0x10B] = 0xFC;  /* ILLEGAL (should not run)       */
+
+    /* Illegal handler at 0x0200: STOP #0x2700 */
+    m[0x200] = 0x4E; m[0x201] = 0x72; m[0x202] = 0x27; m[0x203] = 0x00;
+
+    /* TRAPV handler at 0x0300 */
+    m[0x300] = 0x7E; m[0x301] = 0x55;  /* MOVEQ #0x55, D7 */
+    m[0x302] = 0x4A; m[0x303] = 0xFC;  /* ILLEGAL         */
+
+    M68020BusInterface bus = {
+        .read = flat_read, .write = flat_write, .iack = flat_iack,
+        .reset_peripherals = NULL, .ctx = &bus_data
+    };
+    M68020State *cpu = m68020_create(&bus);
+    m68020_reset(cpu);
+    m68020_run(cpu, 10000);
+
+    u32 d0 = m68020_get_reg(cpu, REG_D0);
+    u32 d7 = m68020_get_reg(cpu, REG_D7);
+
+    CHECK(d0 == 10u,   "D0 = 10 (TRAPT fired, MOVEQ #99 skipped)");
+    CHECK(d7 == 0x55u, "D7 = 0x55 (TRAPV handler executed)");
+
+    m68020_destroy(cpu);
+}
+
+/*
+ * test_cmp2: Verify CMP2.W bounds check (68020).
+ *
+ * Memory at 0x0400: lower=10 (word), upper=20 (word).
+ *
+ * Code:
+ *   MOVEQ #15, D4      ; in range [10..20] → C should be 0
+ *   CMP2.W $0400.L, D4
+ *   SCS D6             ; D6 = 0xFF if C=1 (out of range)
+ *   MOVEQ #5, D4       ; out of range (< 10) → C should be 1
+ *   CMP2.W $0400.L, D4
+ *   SCS D7             ; D7 = 0xFF if C=1
+ *   ILLEGAL
+ *
+ * CMP2.W (abs.L), D4 encoding:
+ *   opword : 0x02F9  (0000 0010 11 111 001 — word size, abs.L EA)
+ *   extword: 0x4000  (D4 = reg 4, is_an=0, is_chk=0)
+ *   address: 0x00000400
+ *
+ * SCS (set if carry set, cc=5=0101) Dn: 0101 0101 11 000 rrr = 0x55C0|r
+ *
+ * Expected: D6=0x00 (in range), D7=0xFF (out of range)
+ */
+static void test_cmp2(void) {
+    printf("\n=== Test: CMP2.W bounds check (68020) ===\n");
+
+    FlatBus bus_data;
+    memset(&bus_data, 0, sizeof bus_data);
+    uint8_t *m = bus_data.mem;
+
+    /* Reset vectors */
+    m[0] = 0x00; m[1] = 0x00; m[2] = 0x80; m[3] = 0x00;  /* SSP */
+    m[4] = 0x00; m[5] = 0x00; m[6] = 0x01; m[7] = 0x00;  /* PC  */
+    /* Vector 4 (illegal) → 0x0200 */
+    m[16] = 0x00; m[17] = 0x00; m[18] = 0x02; m[19] = 0x00;
+
+    /* Bounds at 0x0400: lower=10, upper=20 (big-endian words) */
+    m[0x400] = 0x00; m[0x401] = 0x0A;  /* lower = 10 */
+    m[0x402] = 0x00; m[0x403] = 0x14;  /* upper = 20 */
+
+    /* Code at 0x0100 */
+    uint32_t p = 0x100;
+    m[p++] = 0x78; m[p++] = 0x0F;  /* MOVEQ #15, D4 */
+    /* CMP2.W $0400.L, D4 */
+    m[p++] = 0x02; m[p++] = 0xF9;  /* opword  */
+    m[p++] = 0x40; m[p++] = 0x00;  /* extword */
+    m[p++] = 0x00; m[p++] = 0x00; m[p++] = 0x04; m[p++] = 0x00; /* addr */
+    m[p++] = 0x55; m[p++] = 0xC6;  /* SCS D6 */
+    m[p++] = 0x78; m[p++] = 0x05;  /* MOVEQ #5, D4 */
+    /* CMP2.W $0400.L, D4 */
+    m[p++] = 0x02; m[p++] = 0xF9;
+    m[p++] = 0x40; m[p++] = 0x00;
+    m[p++] = 0x00; m[p++] = 0x00; m[p++] = 0x04; m[p++] = 0x00;
+    m[p++] = 0x55; m[p++] = 0xC7;  /* SCS D7 */
+    m[p++] = 0x4A; m[p++] = 0xFC;  /* ILLEGAL */
+
+    /* Illegal handler at 0x0200: STOP #0x2700 */
+    m[0x200] = 0x4E; m[0x201] = 0x72; m[0x202] = 0x27; m[0x203] = 0x00;
+
+    M68020BusInterface bus = {
+        .read = flat_read, .write = flat_write, .iack = flat_iack,
+        .reset_peripherals = NULL, .ctx = &bus_data
+    };
+    M68020State *cpu = m68020_create(&bus);
+    m68020_reset(cpu);
+    m68020_run(cpu, 10000);
+
+    u32 d6 = m68020_get_reg(cpu, REG_D6);
+    u32 d7 = m68020_get_reg(cpu, REG_D7);
+
+    CHECK(d6 == 0x00u, "D6 = 0x00 (15 in bounds [10..20], C=0)");
+    CHECK(d7 == 0xFFu, "D7 = 0xFF (5 out of bounds [10..20], C=1)");
+
+    m68020_destroy(cpu);
+}
+
+/* ------------------------------------------------------------------ */
 /* Main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -348,6 +492,8 @@ int main(void) {
     test_countdown_loop();
     test_addx_multiword();
     test_move_immediate();
+    test_trapcc();
+    test_cmp2();
 
     printf("\n=====================================\n");
     printf("Results: %d/%d passed", tests_passed, tests_run);

@@ -128,12 +128,94 @@ static u32 handler_chk(M68020State *cpu, u16 opword) {
     return 10;
 }
 
+/* ------------------------------------------------------------------ */
+/* CHK2/CMP2 — Compare Register Against Bounds (68020)                 */
+/* ------------------------------------------------------------------ */
+/*
+ * Encoding: 0000 0ss0 11 ea  (ss: 00=byte, 01=word, 10=long)
+ *   Extension word:
+ *     bit 15:    0=Dn, 1=An
+ *     bits 14:12: register number
+ *     bit 11:    0=CMP2, 1=CHK2
+ *
+ * Lower bound at EA, upper bound at EA + operand_size.
+ * Comparison for An: signed 32-bit (bounds sign-extended from .B/.W)
+ * Comparison for Dn: unsigned, masked to operand size.
+ *
+ * Z=1 if Rn equals either bound.
+ * C=1 if Rn is out of range (< lower or > upper).
+ * CHK2: raises VEC_CHK if C=1.
+ */
+static u32 handler_chk2_cmp2(M68020State *cpu, u16 opword) {
+    u8  ss = (opword >> 9) & 3u;
+    BusSize sz = (ss == 0) ? SIZE_BYTE : (ss == 1) ? SIZE_WORD : SIZE_LONG;
+
+    u16 ext    = pipeline_consume_word(cpu);
+    u8  is_an  = (ext >> 15) & 1u;
+    u8  rn     = (ext >> 12) & 7u;
+    u8  is_chk = (ext >> 11) & 1u;  /* 0=CMP2, 1=CHK2 */
+
+    EADesc ea;
+    if (!ea_resolve(cpu, EA_SRC_MODE(opword), EA_SRC_REG(opword), sz, &ea)) return 8;
+    if (ea.kind != EAK_Mem) {
+        exception_process(cpu, VEC_ILLEGAL_INSN);
+        return 8;
+    }
+
+    /* Read lower bound, then upper bound at EA + operand_size bytes */
+    u32 lower = 0, upper = 0;
+    if (!ea_read(cpu, &ea, sz, &lower)) return 8;
+    EADesc upper_ea = ea;
+    upper_ea.address += (u32)sz;
+    upper_ea.is_postinc = false;
+    if (!ea_read(cpu, &upper_ea, sz, &upper)) return 8;
+
+    bool z_flag, c_flag;
+
+    if (is_an) {
+        /* Address register: sign-extend bounds to 32-bit, compare signed */
+        s32 rval, lo, hi;
+        u32 aval = cpu->A[rn];
+        if (sz == SIZE_BYTE) {
+            rval = (s32)(s8)(u8)aval;
+            lo   = (s32)(s8)(u8)lower;
+            hi   = (s32)(s8)(u8)upper;
+        } else if (sz == SIZE_WORD) {
+            rval = (s32)(s16)(u16)aval;
+            lo   = (s32)(s16)(u16)lower;
+            hi   = (s32)(s16)(u16)upper;
+        } else {
+            rval = (s32)aval;
+            lo   = (s32)lower;
+            hi   = (s32)upper;
+        }
+        z_flag = (rval == lo || rval == hi);
+        c_flag = (rval < lo || rval > hi);
+    } else {
+        /* Data register: unsigned comparison, masked to operand size */
+        u32 m    = sz_mask(sz);
+        u32 rval = cpu->D[rn] & m;
+        lower &= m;
+        upper &= m;
+        z_flag = (rval == lower || rval == upper);
+        c_flag = (rval < lower || rval > upper);
+    }
+
+    cpu->SR &= ~(CCR_Z | CCR_C);
+    if (z_flag) cpu->SR |= CCR_Z;
+    if (c_flag) cpu->SR |= CCR_C;
+
+    if (is_chk && c_flag)
+        exception_process(cpu, VEC_CHK);
+
+    return 8;
+}
+
 void m68020_compare_install_handlers(InsnHandler *t) {
     /* CMP: 1011 DDD0 ss ea */
     for (u32 op = 0xB000u; op <= 0xBFFFu; op++) {
         u8 dir = (op >> 8) & 1u;
         u8 ss  = (op >> 6) & 3u;
-        u8 ea_mode = (op >> 3) & 7u;
         if (dir == 0 && ss != 3) t[op] = handler_cmp;
         /* CMPA: dir=1, ss=010 (.W) or ss=110 (.L) */
         if (dir == 0 && ss == 3) { /* CMPA.W */ t[op] = handler_cmpa; }
@@ -164,4 +246,22 @@ void m68020_compare_install_handlers(InsnHandler *t) {
             t[0x4180u | (dn << 9) | ea] = handler_chk;  /* CHK.W */
             t[0x4100u | (dn << 9) | ea] = handler_chk;  /* CHK.L (68020) */
         }
+
+    /* CHK2/CMP2 (68020): 0000 0ss0 11 ea
+     *   ss=00 (byte): 0x00C0 | ea
+     *   ss=01 (word): 0x02C0 | ea
+     *   ss=10 (long): 0x04C0 | ea
+     * Valid EA modes: control alterable (no Dn/An/post/pre/imm)
+     */
+    for (u32 ss = 0; ss <= 2; ss++) {
+        u32 base = (ss << 9) | 0x00C0u;
+        for (u32 ea = 0; ea < 64; ea++) {
+            u8 mode = (ea >> 3) & 7u;
+            /* Skip Dn, An, (An)+, -(An), immediate */
+            if (mode == EA_MODE_DN || mode == EA_MODE_AN ||
+                mode == EA_MODE_POST || mode == EA_MODE_PRE) continue;
+            if (mode == EA_MODE_EXT && (ea & 7u) == EA_EXT_IMM) continue;
+            t[base | ea] = handler_chk2_cmp2;
+        }
+    }
 }

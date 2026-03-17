@@ -21,6 +21,7 @@ static u32 handler_jmp(M68020State *cpu, u16 opword) {
     }
     pipeline_flush(cpu, ea.address);
     cpu->PC = ea.address;
+    if (SR_T0(cpu->SR)) cpu->trace_pending = true;
     return 8;
 }
 
@@ -43,6 +44,7 @@ static u32 handler_jsr(M68020State *cpu, u16 opword) {
 
     pipeline_flush(cpu, ea.address);
     cpu->PC = ea.address;
+    if (SR_T0(cpu->SR)) cpu->trace_pending = true;
     return 16;
 }
 
@@ -55,6 +57,7 @@ static u32 handler_rts(M68020State *cpu, u16 opword) {
     u32 ret_pc = cpu_pop_long(cpu);
     pipeline_flush(cpu, ret_pc);
     cpu->PC = ret_pc;
+    if (SR_T0(cpu->SR)) cpu->trace_pending = true;
     return 16;
 }
 
@@ -69,6 +72,7 @@ static u32 handler_rtr(M68020State *cpu, u16 opword) {
     cpu->SR    = (cpu->SR & 0xFF00u) | ccr;
     pipeline_flush(cpu, ret_pc);
     cpu->PC = ret_pc;
+    if (SR_T0(cpu->SR)) cpu->trace_pending = true;
     return 20;
 }
 

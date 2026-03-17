@@ -64,6 +64,7 @@ static u32 handler_bra(M68020State *cpu, u16 opword) {
 
     pipeline_flush(cpu, target);
     cpu->PC = target;
+    if (SR_T0(cpu->SR)) cpu->trace_pending = true;
     return 10;
 }
 
@@ -100,6 +101,7 @@ static u32 handler_bsr(M68020State *cpu, u16 opword) {
     cpu_push_long(cpu, return_pc);
     pipeline_flush(cpu, target);
     cpu->PC = target;
+    if (SR_T0(cpu->SR)) cpu->trace_pending = true;
     return 18;
 }
 
@@ -119,6 +121,7 @@ static u32 handler_bcc(M68020State *cpu, u16 opword) {
     if (m68020_test_cc(cpu->SR, cc)) {
         pipeline_flush(cpu, target);
         cpu->PC = target;
+        if (SR_T0(cpu->SR)) cpu->trace_pending = true;
         return 10;  /* taken */
     }
     return 8;  /* not taken (fall through, prefetch already advanced) */
@@ -152,6 +155,7 @@ static u32 handler_dbcc(M68020State *cpu, u16 opword) {
         /* Branch taken */
         pipeline_flush(cpu, target);
         cpu->PC = target;
+        if (SR_T0(cpu->SR)) cpu->trace_pending = true;
         return 10;
     }
     /* Counter expired (== -1): fall through */
@@ -180,6 +184,36 @@ static u32 handler_scc(M68020State *cpu, u16 opword) {
 
     /* If Dn and condition true: 6 cycles; else 4 */
     return (dst.kind == EAK_Dn && val == 0xFF) ? 6 : 4;
+}
+
+/* ------------------------------------------------------------------ */
+/* TRAPcc — Trap on Condition (68020)                                  */
+/* ------------------------------------------------------------------ */
+/*
+ * Encoding: 0101 CCCC 1111 10xx
+ *   xx = 010 (TRAPcc.W — consume one word operand)
+ *   xx = 011 (TRAPcc.L — consume one long operand)
+ *   xx = 100 (TRAPcc   — no operand)
+ *
+ * The optional operand is consumed but has no effect on the operation.
+ * If the condition is true, raises a TRAPV exception (vector 7).
+ */
+static u32 handler_trapcc(M68020State *cpu, u16 opword) {
+    u8 cc   = (opword >> 8) & 0xFu;
+    u8 form = opword & 7u;  /* 2=.W, 3=.L, 4=no operand */
+
+    /* Consume optional operand (ignored functionally) */
+    if (form == 2)
+        pipeline_consume_word(cpu);
+    else if (form == 3) {
+        pipeline_consume_word(cpu);
+        pipeline_consume_word(cpu);
+    }
+
+    if (m68020_test_cc(cpu->SR, cc))
+        exception_process(cpu, VEC_TRAPV);
+
+    return 4;
 }
 
 /* ------------------------------------------------------------------ */
@@ -212,5 +246,12 @@ void m68020_branch_install_handlers(InsnHandler *t) {
             if (mode == EA_MODE_EXT && (ea & 7u) >= 5u) continue; /* no PC-rel/imm dst */
             t[base | ea] = handler_scc;
         }
+    }
+
+    /* TRAPcc (68020): 0101 CCCC 1111 10xx (xx=010, 011, 100) */
+    for (u32 cc = 0; cc <= 0xF; cc++) {
+        t[0x50FAu | (cc << 8)] = handler_trapcc;  /* TRAPcc.W */
+        t[0x50FBu | (cc << 8)] = handler_trapcc;  /* TRAPcc.L */
+        t[0x50FCu | (cc << 8)] = handler_trapcc;  /* TRAPcc   */
     }
 }
