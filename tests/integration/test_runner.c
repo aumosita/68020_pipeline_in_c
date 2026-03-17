@@ -482,6 +482,216 @@ static void test_cmp2(void) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Phase 4 Tests                                                       */
+/* ------------------------------------------------------------------ */
+
+/*
+ * test_mulu_l: MULU.L D1,D0 — 32×32→32 unsigned multiply.
+ *
+ * Code:
+ *   MOVEQ #100, D0     ; D0 = 100
+ *   MOVEQ #200, ...    ; can't fit in MOVEQ, use MOVE.L #200,D1
+ *   MOVE.L #200, D1    ; D1 = 200
+ *   MULU.L D1, D0      ; D0 = 100 * 200 = 20000 (32-bit result)
+ *   ILLEGAL
+ *
+ * MULU.L D1,D0:
+ *   opword:  0x4C00 | 0x00 (D0) = 0x4C00
+ *   extword: S=0 (unsigned), L=0 (32-bit), Dl=D0 → 0x0000
+ *   But Dl is the source AND destination for 32-bit form.
+ *   Wait: the source for MUL.L is <ea> (which is D1 here),
+ *   and the destination is Dl (D0).
+ *   opword: 0x4C00 | ea(D1=001) = 0x4C01
+ *   extword: S=0, L=0, Dh=don't care, Dl=D0=000 → 0x0000
+ *
+ * MOVE.L #200,D1:
+ *   0x223C 0x00 0x00 0x00 0xC8
+ *   MOVE.L #imm,D1 = 0010 001 010 111 100 = wait:
+ *   MOVE.L: 0010 Dn 000 src_ea where dst=D1 → 0010 001 000 ... hmm
+ *   Actually MOVE.L #imm,D1: opword = 0x223C, then long immediate
+ *   0x223C = 0010 0010 0011 1100 = MOVE.L #imm, D1
+ *
+ * Expected: D0 = 20000
+ */
+static void test_mulu_l(void) {
+    printf("\n=== Test: MULU.L 32×32→32 (68020) ===\n");
+
+    FlatBus bus_data;
+    memset(&bus_data, 0, sizeof bus_data);
+    uint8_t *m = bus_data.mem;
+
+    m[0] = 0x00; m[1] = 0x00; m[2] = 0x80; m[3] = 0x00;  /* SSP */
+    m[4] = 0x00; m[5] = 0x00; m[6] = 0x01; m[7] = 0x00;  /* PC  */
+    m[16] = 0x00; m[17] = 0x00; m[18] = 0x02; m[19] = 0x00; /* vec4 → 0x200 */
+
+    uint32_t p = 0x100;
+    /* MOVEQ #100, D0 = 0x70 0x64 */
+    m[p++] = 0x70; m[p++] = 0x64;
+    /* MOVE.L #200, D1 = 0x22 0x3C 0x00 0x00 0x00 0xC8 */
+    m[p++] = 0x22; m[p++] = 0x3C;
+    m[p++] = 0x00; m[p++] = 0x00; m[p++] = 0x00; m[p++] = 0xC8;
+    /* MULU.L D1, D0:
+     *   opword = 0x4C01 (0100 1100 00 000 001 — src=D1, sz=00=byte? no)
+     *   Actually: 0x4C00 | ea where ea for D1 = 001 → 0x4C01
+     *   extword = 0x0000 (S=0=MULU, L=0=32bit, Dh=0, Dl=0=D0)
+     */
+    m[p++] = 0x4C; m[p++] = 0x01;  /* MULU.L D1, D0 opword */
+    m[p++] = 0x00; m[p++] = 0x00;  /* extword: Dl=D0, 32-bit result */
+    m[p++] = 0x4A; m[p++] = 0xFC;  /* ILLEGAL */
+
+    m[0x200] = 0x4E; m[0x201] = 0x72; m[0x202] = 0x27; m[0x203] = 0x00;
+
+    M68020BusInterface bus = {
+        .read = flat_read, .write = flat_write, .iack = flat_iack,
+        .reset_peripherals = NULL, .ctx = &bus_data
+    };
+    M68020State *cpu = m68020_create(&bus);
+    m68020_reset(cpu);
+    m68020_run(cpu, 10000);
+
+    u32 d0 = m68020_get_reg(cpu, REG_D0);
+    CHECK(d0 == 20000u, "D0 = 20000 after MULU.L #100 * #200");
+    m68020_destroy(cpu);
+}
+
+/*
+ * test_bfextu: Extract a 4-bit field from a data register.
+ *
+ * Code:
+ *   MOVE.L #0xABCDEF12, D0   ; D0 = 0xABCDEF12
+ *   BFEXTU D0{#8:#4}, D1     ; extract bits 8..11 from MSB end of D0
+ *                             ; D0 in big-endian bit order: bit0=MSB=A
+ *                             ; offset 8 from MSB = byte index 1 = 0xCD
+ *                             ; 4 bits starting at bit 8 = upper nibble of 0xCD = 0xC
+ *   ILLEGAL
+ *
+ * BFEXTU D0{#8:#4}, D1:
+ *   opword:  0xE9C0 | 0x00 (D0 EA) = 0xE9C0
+ *   extword: bit15=0, Dn=D1=001 (bits14:12=001),
+ *            D/O=0 (bit11=0), offset=8 (bits10:6 = 0b01000 = 0x08),
+ *            D/W=0 (bit5=0), width=4 (bits4:0 = 0b00100)
+ *            = 0000 001 0 0010 0000 0100
+ *            = 0001 0010 0000 0100 = 0x1204
+ *
+ * 0xABCDEF12 in binary (MSB first):
+ *   1010 1011 1100 1101 1110 1111 0001 0010
+ *   ^bit0                                ^bit31
+ * Offset 8 (from MSB): skips 8 bits = 0xAB, starts at 0xCD
+ * 4 bits = upper nibble of 0xCD = 0xC = 12
+ *
+ * Expected: D1 = 0xC = 12
+ */
+static void test_bfextu(void) {
+    printf("\n=== Test: BFEXTU D0{#8:#4},D1 (68020) ===\n");
+
+    FlatBus bus_data;
+    memset(&bus_data, 0, sizeof bus_data);
+    uint8_t *m = bus_data.mem;
+
+    m[0] = 0x00; m[1] = 0x00; m[2] = 0x80; m[3] = 0x00;
+    m[4] = 0x00; m[5] = 0x00; m[6] = 0x01; m[7] = 0x00;
+    m[16] = 0x00; m[17] = 0x00; m[18] = 0x02; m[19] = 0x00;
+
+    uint32_t p = 0x100;
+    /* MOVE.L #0xABCDEF12, D0 = 0x20 3C 0xAB 0xCD 0xEF 0x12 */
+    m[p++] = 0x20; m[p++] = 0x3C;
+    m[p++] = 0xAB; m[p++] = 0xCD; m[p++] = 0xEF; m[p++] = 0x12;
+    /* BFEXTU D0{#8:#4}, D1:
+     *   opword = 0xE9C0 (D0 EA)
+     *   extword: Dn=D1=1 → bits14:12=001; D/O=0→bit11=0;
+     *            offset=8→bits10:6=01000; D/W=0→bit5=0; width=4→bits4:0=00100
+     *   = 0b 0001 0010 0000 0100 = 0x1204
+     */
+    m[p++] = 0xE9; m[p++] = 0xC0;  /* opword: BFEXTU D0,... */
+    m[p++] = 0x12; m[p++] = 0x04;  /* extword */
+    m[p++] = 0x4A; m[p++] = 0xFC;  /* ILLEGAL */
+
+    m[0x200] = 0x4E; m[0x201] = 0x72; m[0x202] = 0x27; m[0x203] = 0x00;
+
+    M68020BusInterface bus = {
+        .read = flat_read, .write = flat_write, .iack = flat_iack,
+        .reset_peripherals = NULL, .ctx = &bus_data
+    };
+    M68020State *cpu = m68020_create(&bus);
+    m68020_reset(cpu);
+    m68020_run(cpu, 10000);
+
+    u32 d1 = m68020_get_reg(cpu, REG_D1);
+    CHECK(d1 == 0xCu, "D1 = 0xC after BFEXTU D0{#8:#4},D1");
+    m68020_destroy(cpu);
+}
+
+/*
+ * test_cas: CAS.L — compare-and-swap on memory.
+ *
+ * Memory at 0x0400: initial value = 42
+ * Code:
+ *   MOVE.L #42, D0        ; D0 = 42 (compare value Dc)
+ *   MOVE.L #99, D1        ; D1 = 99 (update value Du)
+ *   CAS.L D0, D1, $0400.L ; if [0x400]==D0 (42): [0x400]←D1 (99), Z=1
+ *   MOVE.L $0400.L, D2    ; D2 = new value at 0x400
+ *   ILLEGAL
+ *
+ * CAS.L (abs.L), D0, D1:
+ *   opword: 0x0EC0 | 0x39 = 0x0EF9  (abs.L EA: mode=7,reg=1=0x39... wait)
+ *   Actually: CAS.L has opword 0x0EC0 | ea.
+ *   ea for (abs.L) = mode=7, reg=1 → ea field = 0b111001 = 0x39
+ *   opword = 0x0EC0 | 0x39 = 0x0EF9
+ *   extword: Du=D1=1 (bits8:6=001), Dc=D0=0 (bits2:0=000) → 0x0040
+ *   address: 0x00000400
+ *
+ * Expected: D2 = 99 (swap happened), Z=1 (but D2 captures mem value after swap)
+ */
+static void test_cas(void) {
+    printf("\n=== Test: CAS.L compare-and-swap (68020) ===\n");
+
+    FlatBus bus_data;
+    memset(&bus_data, 0, sizeof bus_data);
+    uint8_t *m = bus_data.mem;
+
+    m[0] = 0x00; m[1] = 0x00; m[2] = 0x80; m[3] = 0x00;
+    m[4] = 0x00; m[5] = 0x00; m[6] = 0x01; m[7] = 0x00;
+    m[16] = 0x00; m[17] = 0x00; m[18] = 0x02; m[19] = 0x00;
+
+    /* Memory at 0x400: initial value = 42 = 0x0000002A */
+    m[0x400] = 0x00; m[0x401] = 0x00; m[0x402] = 0x00; m[0x403] = 0x2A;
+
+    uint32_t p = 0x100;
+    /* MOVE.L #42, D0 = 0x20 3C 0x00 0x00 0x00 0x2A */
+    m[p++] = 0x20; m[p++] = 0x3C;
+    m[p++] = 0x00; m[p++] = 0x00; m[p++] = 0x00; m[p++] = 0x2A;
+    /* MOVE.L #99, D1 = 0x22 3C 0x00 0x00 0x00 0x63 */
+    m[p++] = 0x22; m[p++] = 0x3C;
+    m[p++] = 0x00; m[p++] = 0x00; m[p++] = 0x00; m[p++] = 0x63;
+    /* CAS.L D0,D1,$0400.L:
+     *   opword = 0x0EF9 (CAS.L abs.L)
+     *   extword = 0x0040 (Du=D1=1 in bits8:6=001, Dc=D0=0 in bits2:0=000)
+     *   address = 0x00000400
+     */
+    m[p++] = 0x0E; m[p++] = 0xF9;  /* opword */
+    m[p++] = 0x00; m[p++] = 0x40;  /* extword: Du=D1, Dc=D0 */
+    m[p++] = 0x00; m[p++] = 0x00; m[p++] = 0x04; m[p++] = 0x00; /* addr */
+    /* MOVE.L $0400.L, D2 = 0x24 39 0x00 0x00 0x04 0x00 */
+    m[p++] = 0x24; m[p++] = 0x39;
+    m[p++] = 0x00; m[p++] = 0x00; m[p++] = 0x04; m[p++] = 0x00;
+    m[p++] = 0x4A; m[p++] = 0xFC;  /* ILLEGAL */
+
+    m[0x200] = 0x4E; m[0x201] = 0x72; m[0x202] = 0x27; m[0x203] = 0x00;
+
+    M68020BusInterface bus = {
+        .read = flat_read, .write = flat_write, .iack = flat_iack,
+        .reset_peripherals = NULL, .ctx = &bus_data
+    };
+    M68020State *cpu = m68020_create(&bus);
+    m68020_reset(cpu);
+    m68020_run(cpu, 10000);
+
+    u32 d2 = m68020_get_reg(cpu, REG_D2);
+    CHECK(d2 == 99u, "D2 = 99 (CAS swapped 42→99 in memory)");
+    m68020_destroy(cpu);
+}
+
+/* ------------------------------------------------------------------ */
 /* Main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -494,6 +704,9 @@ int main(void) {
     test_move_immediate();
     test_trapcc();
     test_cmp2();
+    test_mulu_l();
+    test_bfextu();
+    test_cas();
 
     printf("\n=====================================\n");
     printf("Results: %d/%d passed", tests_passed, tests_run);

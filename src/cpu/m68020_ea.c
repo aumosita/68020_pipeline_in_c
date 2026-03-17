@@ -128,13 +128,49 @@ bool ea_resolve(M68020State *cpu, u8 mode, u8 reg,
             }
 
             if (iis != 0) {
-                /* Memory indirect modes — Phase 4 */
-                exception_process(cpu, VEC_ILLEGAL_INSN);
-                return false;
+                /* Memory indirect modes (Phase 4).
+                 *
+                 * Pre-indexed  (iis=1,2,3): intermediate = base + bd + idx
+                 *                            final = *intermediate + od
+                 * Post-indexed (iis=5,6,7): intermediate = base + bd
+                 *                            final = *intermediate + idx + od
+                 * No-index     (iis=4):      same as post-indexed (IS=1, idx=0)
+                 *
+                 * Outer displacement size (iis & 3):
+                 *   0,1 → null (od=0)   2 → word   3 → long
+                 */
+                u32 intermediate = (iis < 4)
+                    ? (base + (u32)idx + (u32)bd)   /* pre-indexed */
+                    : (base             + (u32)bd);  /* post-indexed / no-index */
+
+                u32 ptr = 0;
+                if (cpu_read_long(cpu, intermediate, &ptr) != BUS_OK) {
+                    exception_bus_error(cpu, intermediate, false, 0);
+                    return false;
+                }
+
+                /* Outer displacement — consumed AFTER memory read */
+                s32 od = 0;
+                switch (iis & 3u) {
+                    case 2: od = (s32)(s16)pipeline_consume_word(cpu); break;
+                    case 3: {
+                        u16 hi = pipeline_consume_word(cpu);
+                        u16 lo = pipeline_consume_word(cpu);
+                        od = (s32)(((u32)hi << 16) | lo);
+                        break;
+                    }
+                    default: break;  /* null */
+                }
+
+                out->kind    = EAK_Mem;
+                out->address = (iis < 4)
+                    ? (ptr + (u32)od)              /* pre-indexed */
+                    : (ptr + (u32)idx + (u32)od);  /* post-indexed */
+                return true;
             }
 
             out->kind    = EAK_Mem;
-            out->address = base + idx + bd;
+            out->address = base + (u32)idx + (u32)bd;
         } else {
             /* Brief extension word (bit 8 = 0): (d8,An,Xn) */
             s32 idx  = decode_index(cpu, ext);
@@ -176,15 +212,72 @@ bool ea_resolve(M68020State *cpu, u8 mode, u8 reg,
             return true;
         }
 
-        /* (d8,PC,Xn) */
+        /* (d8,PC,Xn) or full extension word with PC base */
         case EA_EXT_IDXPC: {
             u32 pc_of_ext = pipeline_peek_pc(cpu);
             u16 ext       = pipeline_consume_word(cpu);
-            s32 idx       = decode_index(cpu, ext);
-            s8  disp      = (s8)(ext & 0xFFu);
-            out->kind     = EAK_Mem;
-            out->address  = pc_of_ext + idx + (s32)disp;
-            return true;
+
+            if (ext & 0x0100u) {
+                /* Full extension word — PC as base register */
+                bool bs  = (ext >> 7) & 1u;
+                bool is  = (ext >> 6) & 1u;
+                u8   bds = (ext >> 4) & 3u;
+                u8   iis = ext & 7u;
+
+                u32 base = bs ? 0u : pc_of_ext;
+                s32 idx2 = is ? 0 : decode_index(cpu, ext);
+
+                s32 bd = 0;
+                if (bds == 2)
+                    bd = (s32)(s16)pipeline_consume_word(cpu);
+                else if (bds == 3) {
+                    u16 hi = pipeline_consume_word(cpu);
+                    u16 lo = pipeline_consume_word(cpu);
+                    bd = (s32)(((u32)hi << 16) | lo);
+                }
+
+                if (iis == 0) {
+                    out->kind    = EAK_Mem;
+                    out->address = base + (u32)idx2 + (u32)bd;
+                    return true;
+                }
+
+                /* Memory indirect with PC base */
+                u32 intermediate = (iis < 4)
+                    ? (base + (u32)idx2 + (u32)bd)
+                    : (base             + (u32)bd);
+
+                u32 ptr = 0;
+                if (cpu_read_long(cpu, intermediate, &ptr) != BUS_OK) {
+                    exception_bus_error(cpu, intermediate, false, 0);
+                    return false;
+                }
+
+                s32 od = 0;
+                switch (iis & 3u) {
+                    case 2: od = (s32)(s16)pipeline_consume_word(cpu); break;
+                    case 3: {
+                        u16 hi = pipeline_consume_word(cpu);
+                        u16 lo = pipeline_consume_word(cpu);
+                        od = (s32)(((u32)hi << 16) | lo);
+                        break;
+                    }
+                    default: break;
+                }
+
+                out->kind    = EAK_Mem;
+                out->address = (iis < 4)
+                    ? (ptr + (u32)od)
+                    : (ptr + (u32)idx2 + (u32)od);
+                return true;
+            } else {
+                /* Brief extension word: (d8,PC,Xn) */
+                s32 idx2 = decode_index(cpu, ext);
+                s8  disp = (s8)(ext & 0xFFu);
+                out->kind    = EAK_Mem;
+                out->address = pc_of_ext + idx2 + (s32)disp;
+                return true;
+            }
         }
 
         /* #immediate */
