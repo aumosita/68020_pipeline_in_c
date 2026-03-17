@@ -1,0 +1,19 @@
+# Claude Code settings (local only)
+.claude/
+
+# Build artifacts
+build/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+*.a
+*.o
+*.d
+test_runner
+test_runner.dSYM/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*~
