@@ -57,7 +57,15 @@ target_link_libraries(test_runner m68020)
 target_include_directories(test_runner PRIVATE include)
 
 # -----------------------------------------------------------------------
+# Systematic validation test
+# -----------------------------------------------------------------------
+add_executable(test_systematic tests/validation/test_systematic.c)
+target_link_libraries(test_systematic m68020)
+target_include_directories(test_systematic PRIVATE include)
+
+# -----------------------------------------------------------------------
 # CTest integration
 # -----------------------------------------------------------------------
 enable_testing()
 add_test(NAME integration COMMAND test_runner)
+add_test(NAME systematic  COMMAND test_systematic)

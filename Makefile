@@ -35,10 +35,11 @@ OBJS = $(SRCS:.c=.o)
 
 LIB  = libm68020.a
 TEST = test_runner
+TEST_SYS = test_systematic
 
-.PHONY: all clean test
+.PHONY: all clean test test-all
 
-all: $(TEST)
+all: $(TEST) $(TEST_SYS)
 
 $(LIB): $(OBJS)
 	ar rcs $@ $^
@@ -46,11 +47,15 @@ $(LIB): $(OBJS)
 $(TEST): tests/integration/test_runner.c $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< -L. -lm68020
 
+$(TEST_SYS): tests/validation/test_systematic.c $(LIB)
+	$(CC) $(CFLAGS) -o $@ $< -L. -lm68020
+
 %.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-test: $(TEST)
+test: $(TEST) $(TEST_SYS)
 	./$(TEST)
+	./$(TEST_SYS)
 
 DEPS = $(OBJS:.o=.d)
 -include $(DEPS)
