@@ -34,6 +34,12 @@ static BusResult raw_read(M68020State *cpu, u32 addr, BusSize size,
     u32 cycles = 0;
     BusResult r = cpu->bus.read(cpu->bus.ctx, addr, size, fc, val, &cycles);
     cpu->cycle_count += cycles;
+    /* Track data bus usage for pipeline overlap (data FC only, not ifetch).
+     * Bus occupancy = base transfer time + wait states from callback. */
+    if (fc != FC_SUPERVISOR_PROG && fc != FC_USER_PROG) {
+        u32 bus_time = (size == SIZE_LONG ? 4u : 2u) + cycles;
+        pipeline_note_data_bus(cpu, bus_time);
+    }
     return r;
 }
 
@@ -42,6 +48,10 @@ static BusResult raw_write(M68020State *cpu, u32 addr, BusSize size,
     u32 cycles = 0;
     BusResult r = cpu->bus.write(cpu->bus.ctx, addr, size, fc, val, &cycles);
     cpu->cycle_count += cycles;
+    /* Track data bus usage for pipeline overlap.
+     * Bus occupancy = base transfer time + wait states. */
+    u32 bus_time = (size == SIZE_LONG ? 4u : 2u) + cycles;
+    pipeline_note_data_bus(cpu, bus_time);
     return r;
 }
 
@@ -158,12 +168,35 @@ BusResult cpu_fetch_word(M68020State *cpu, u32 addr, u16 *val) {
         exception_address_error(cpu, addr, false);
         return BUS_ERROR;
     }
-    u32 raw;
-    if (raw_read(cpu, addr, SIZE_WORD, cpu_prog_fc(cpu), &raw) != BUS_OK) {
+
+    /* Try instruction cache first */
+    if (icache_lookup(cpu, addr, val))
+        return BUS_OK;   /* cache hit: 0 bus cycles, 0 fetch cost */
+
+    /* Cache miss: fetch aligned long word from bus (as the real 68020 does).
+     * The bus controller always does long-word instruction fetches. */
+    u32 aligned = addr & ~3u;
+    u32 longword;
+    FunctionCode fc = cpu_prog_fc(cpu);
+
+    if (raw_read(cpu, aligned, SIZE_LONG, fc, &longword) != BUS_OK) {
         exception_bus_error(cpu, addr, false, 0);
         return BUS_ERROR;
     }
-    *val = (u16)raw;
+
+    /* Track B-stage fetch cost for pipeline overlap accounting.
+     * A long-word bus fetch = 4 cycles of bus occupancy by B-stage. */
+    cpu->b_fetch_cycles += 4;
+
+    /* Fill the cache line */
+    icache_fill(cpu, aligned, longword);
+
+    /* Extract the requested word */
+    if (addr & 2u)
+        *val = (u16)(longword & 0xFFFFu);   /* lower word */
+    else
+        *val = (u16)(longword >> 16);        /* upper word */
+
     return BUS_OK;
 }
 
@@ -172,13 +205,15 @@ BusResult cpu_fetch_word(M68020State *cpu, u32 addr, u16 *val) {
 /* ------------------------------------------------------------------ */
 
 void cpu_push_word(M68020State *cpu, u16 val) {
-    cpu->A[7] -= 2;
-    cpu_write_word(cpu, cpu->A[7], val);
+    u32 new_sp = cpu->A[7] - 2;
+    cpu_write_word(cpu, new_sp, val);  /* may longjmp on bus error */
+    cpu->A[7] = new_sp;               /* only reached if write succeeded */
 }
 
 void cpu_push_long(M68020State *cpu, u32 val) {
-    cpu->A[7] -= 4;
-    cpu_write_long(cpu, cpu->A[7], val);
+    u32 new_sp = cpu->A[7] - 4;
+    cpu_write_long(cpu, new_sp, val);  /* may longjmp on bus error */
+    cpu->A[7] = new_sp;               /* only reached if write succeeded */
 }
 
 u16 cpu_pop_word(M68020State *cpu) {

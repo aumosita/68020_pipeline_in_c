@@ -67,13 +67,20 @@ void m68020_build_dispatch_table(void) {
 /* Single-step execution                                               */
 /* ------------------------------------------------------------------ */
 
+/* IPL 7 is non-maskable (NMI): always recognized regardless of mask */
+static inline bool interrupt_pending(const M68020State *cpu) {
+    u8 ipl  = cpu->pending_ipl;
+    u8 mask = SR_IPL(cpu->SR);
+    return ipl > mask || ipl == 7;
+}
+
 u32 m68020_step(M68020State *cpu) {
     if (cpu->halted)
         return 1;
 
     if (cpu->stopped) {
         /* STOP: wait for interrupt */
-        if (cpu->pending_ipl > SR_IPL(cpu->SR)) {
+        if (interrupt_pending(cpu)) {
             cpu->stopped = false;
             /* fall through to interrupt check below */
         } else {
@@ -96,31 +103,61 @@ u32 m68020_step(M68020State *cpu) {
         /* Exception was taken; CPU PC/SR already updated.
          * Deactivate guard and return — caller will call step() again. */
         cpu->fault_jmp_active = false;
+        cpu->in_exception = false;
         cpu->instr_count++;
         return 0;
     }
 
     /* Check for pending interrupts */
-    if (cpu->pending_ipl > SR_IPL(cpu->SR)) {
+    if (interrupt_pending(cpu)) {
         m68020_process_interrupt(cpu);
         cpu->fault_jmp_active = false;
         cpu->instr_count++;
         return 0;
     }
 
-    /* Opportunistically fill the prefetch queue */
-    pipeline_refill(cpu);
-
     /* Fire trace hook if installed */
     if (cpu->trace_hook)
         cpu->trace_hook(cpu, cpu->trace_hook_user);
 
+    /* Compute pipeline overlap benefit from previous instruction.
+     * Must be called BEFORE pipeline_refill so that the refill cost
+     * is included in the cycle accounting that overlap can recover. */
+    bool was_flush = cpu->flush_pending;
+    u32 overlap = pipeline_overlap_begin(cpu);
+
     /* Record start cycle count to compute instruction cycles */
     u64 start_cycles = cpu->cycle_count;
+
+    /* Reset per-instruction tracking */
+    cpu->e_bus_cycles = 0;
+    cpu->b_fetch_cycles = 0;
+    cpu->words_consumed = 0;
+
+    /* Fill the prefetch queue.  The cost of these fetches is part of
+     * the cycle accounting that the overlap model can recover.
+     * After a flush, the B-stage had to restart, so we only fill
+     * enough for opword + one extension word (minimal restart). */
+    if (was_flush)
+        pipeline_refill_n(cpu, 2);  /* minimal: opword + 1 extension */
+    else
+        pipeline_refill(cpu);       /* full: up to PREFETCH_DEPTH */
 
     /* Fetch opword (consumes one word from the prefetch queue) */
     cpu->PC = pipeline_peek_pc(cpu);
     u16 opword = pipeline_consume_word(cpu);
+
+    /* C-stage: decode cost depends on EA complexity.
+     * This penalty represents decode work that couldn't be hidden
+     * behind the previous instruction's E-stage. If the previous
+     * E-stage was long enough, the C-stage cost is fully overlapped. */
+    u32 c_cost = opword_decode_cost(opword);
+    if (c_cost > overlap) {
+        cpu->cycle_count += (c_cost - overlap);
+        overlap = 0;  /* overlap fully consumed by C-stage */
+    } else {
+        overlap -= c_cost;  /* remaining overlap benefits E-stage */
+    }
 
     /* Handle deferred trace exception (fires at instruction boundary) */
     if (cpu->trace_pending) {
@@ -134,14 +171,24 @@ u32 m68020_step(M68020State *cpu) {
         cpu->trace_pending = true;  /* trace every instruction (T1) */
     /* T0 (branch trace) is handled in branch/jump handlers */
 
-    /* Dispatch */
-    u32 extra_cycles = g_dispatch[opword](cpu, opword);
-    (void)extra_cycles;
+    /* E-stage: dispatch to instruction handler */
+    (void)g_dispatch[opword](cpu, opword);
+
+    /* Apply remaining pipeline overlap: subtract prefetch time that was
+     * hidden behind the previous instruction's execution. */
+    u32 raw_cycles = (u32)(cpu->cycle_count - start_cycles);
+    if (overlap > 0 && overlap <= raw_cycles) {
+        cpu->cycle_count -= overlap;
+    }
+
+    /* Record timing for next instruction's overlap calculation */
+    u32 actual = (u32)(cpu->cycle_count - start_cycles);
+    pipeline_overlap_end(cpu, actual, cpu->e_bus_cycles);
 
     cpu->fault_jmp_active = false;
     cpu->instr_count++;
 
-    return (u32)(cpu->cycle_count - start_cycles);
+    return actual;
 }
 
 /* ------------------------------------------------------------------ */

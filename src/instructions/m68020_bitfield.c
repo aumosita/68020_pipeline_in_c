@@ -80,16 +80,16 @@ static u32 bf_reg_insert(u32 reg, u32 start, u32 width, u32 field) {
     u64 ins   = ((u64)(field & (u32)fmask)) << shift;
     u64 mask  = fmask << shift;
     v = (v & ~mask) | ins;
-    /* Merge: OR the two 32-bit halves to apply wrap-around writes */
     u32 hi = (u32)(v >> 32);
     u32 lo = (u32)(v & 0xFFFFFFFFuLL);
-    /* For non-wrap: one half has data, the other has original bits.
-     * For wrap: both halves have parts of the field.
-     * Merging with wrap-around requires the field bits in both halves. */
     if (start + width <= 32u)
         return hi;   /* no wrap — upper half is the correct result */
-    else
-        return hi | lo; /* wrap — both halves contribute field bits */
+    /* Wrap: hi has the field's leading bits (at the low end of the register),
+     * lo has the field's trailing bits (at the high end of the register).
+     * Take trailing field bits from lo, everything else from hi. */
+    u32 wrap_bits = start + width - 32u;
+    u32 lo_mask = (wrap_bits >= 32u) ? ~0u : ((1u << wrap_bits) - 1u) << (32u - wrap_bits);
+    return (hi & ~lo_mask) | (lo & lo_mask);
 }
 
 /* ------------------------------------------------------------------ */

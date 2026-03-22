@@ -84,7 +84,7 @@ void exception_process(M68020State *cpu, u32 vector) {
     if (!SR_S(saved_sr)) {
         /* User → Supervisor */
         cpu->USP  = cpu->A[7];
-        cpu->A[7] = is_interrupt ? cpu->ISP : cpu->ISP; /* use ISP */
+        cpu->A[7] = (is_interrupt || !SR_M(saved_sr)) ? cpu->ISP : cpu->MSP;
     } else if (is_interrupt && SR_M(saved_sr)) {
         /* Supervisor MSP → ISP (interrupt exception while in master mode) */
         cpu->MSP  = cpu->A[7];
@@ -191,7 +191,10 @@ void exception_process(M68020State *cpu, u32 vector) {
  */
 void m68020_process_interrupt(M68020State *cpu) {
     u8 level = cpu->pending_ipl;
-    if (level == 0 || level <= SR_IPL(cpu->SR))
+    if (level == 0)
+        return;
+    /* IPL 7 is non-maskable; others must exceed current mask */
+    if (level != 7 && level <= SR_IPL(cpu->SR))
         return;
 
     /* Update SR interrupt mask BEFORE the IACK cycle */

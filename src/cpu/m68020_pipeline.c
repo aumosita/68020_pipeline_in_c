@@ -55,6 +55,7 @@ u16 pipeline_consume_word(M68020State *cpu) {
     u16 word = q->buf[q->head];
     q->head   = (q->head + 1) % PREFETCH_DEPTH;
     q->count--;
+    cpu->words_consumed++;  /* track for overlap ceiling calculation */
     return word;
 }
 
@@ -78,7 +79,8 @@ void pipeline_flush(M68020State *cpu, u32 new_pc) {
     cpu->prefetch.head       = 0;
     cpu->prefetch.count      = 0;
     cpu->prefetch.fetch_addr = new_pc;
-    cpu->cycle_count        += 4;   /* pipeline flush penalty */
+    cpu->cycle_count        += 2;   /* B-stage restart cost (2 cycles) */
+    cpu->flush_pending       = true; /* kill overlap for next instruction */
 }
 
 /*
@@ -87,5 +89,15 @@ void pipeline_flush(M68020State *cpu, u32 new_pc) {
  */
 void pipeline_refill(M68020State *cpu) {
     while (cpu->prefetch.count < PREFETCH_DEPTH)
+        prefetch_one(cpu);
+}
+
+/*
+ * Partial refill: fill up to `n` words (not exceeding PREFETCH_DEPTH).
+ * Used after pipeline flush for minimal B-stage restart.
+ */
+void pipeline_refill_n(M68020State *cpu, u8 n) {
+    u8 target = (n < PREFETCH_DEPTH) ? n : PREFETCH_DEPTH;
+    while (cpu->prefetch.count < target)
         prefetch_one(cpu);
 }

@@ -52,6 +52,16 @@ void m68020_reset(M68020State *cpu) {
     cpu->cycle_count   = 0;
     cpu->instr_count   = 0;
 
+    /* Pipeline overlap state */
+    cpu->b_avail_cycles    = 0;
+    cpu->last_e_cycles     = 0;
+    cpu->e_bus_cycles      = 0;
+    cpu->flush_pending     = true;  /* first instruction has no overlap */
+    cpu->b_fetch_cycles    = 0;
+    cpu->last_b_fetch_cycles = 0;
+    cpu->words_consumed    = 0;
+    cpu->last_words_consumed = 0;
+
     /* Read initial SSP from vector 0 */
     u32 ssp = 0;
     {
@@ -125,7 +135,7 @@ void m68020_set_reg(M68020State *cpu, M68020Reg reg, u32 value) {
         case REG_MSP:  cpu->MSP  = value; break;
         case REG_ISP:  cpu->ISP  = value; break;
         case REG_VBR:  cpu->VBR  = value; break;
-        case REG_CACR: cpu->CACR = value; break;
+        case REG_CACR: icache_update_cacr(cpu, value); break;
         case REG_CAAR: cpu->CAAR = value; break;
         case REG_SFC:  cpu->SFC  = value & 7u; break;
         case REG_DFC:  cpu->DFC  = value & 7u; break;

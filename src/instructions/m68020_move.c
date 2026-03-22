@@ -105,6 +105,40 @@ static u32 handler_moveq(M68020State *cpu, u16 opword) {
  * For mem→reg:  mask bit 0 = D0 ... bit 15 = A7
  * For reg→mem with -(An): mask is reversed (bit 15 = D0, bit 0 = A7)
  */
+/* MOVEM base cycles per EA mode (MC68020 User's Manual Table 9-17/9-18) */
+static u32 movem_base(u8 mode, u8 reg, bool to_mem) {
+    if (to_mem) {
+        switch (mode) {
+        case EA_MODE_IND:   return 8;
+        case EA_MODE_PRE:   return 8;
+        case EA_MODE_D16:   return 12;
+        case EA_MODE_IDX:   return 14;
+        case EA_MODE_EXT:
+            switch (reg) {
+            case EA_EXT_ABSW: return 12;
+            case EA_EXT_ABSL: return 16;
+            }
+            break;
+        }
+    } else {
+        switch (mode) {
+        case EA_MODE_IND:   return 12;
+        case EA_MODE_POST:  return 12;
+        case EA_MODE_D16:   return 16;
+        case EA_MODE_IDX:   return 18;
+        case EA_MODE_EXT:
+            switch (reg) {
+            case EA_EXT_ABSW:   return 16;
+            case EA_EXT_ABSL:   return 20;
+            case EA_EXT_D16PC:  return 16;
+            case EA_EXT_IDXPC:  return 18;
+            }
+            break;
+        }
+    }
+    return 8;
+}
+
 static u32 handler_movem(M68020State *cpu, u16 opword) {
     bool to_mem = !(opword & 0x0400u);         /* 0 = reg→mem, 1 = mem→reg */
     BusSize size = (opword & 0x0040u) ? SIZE_LONG : SIZE_WORD;
@@ -112,7 +146,7 @@ static u32 handler_movem(M68020State *cpu, u16 opword) {
     u8 ea_reg  = EA_SRC_REG(opword);
 
     u16 mask = pipeline_consume_word(cpu);
-    u32 cycles = 8;
+    u32 cycles = movem_base(ea_mode, ea_reg, to_mem);
 
     if (to_mem) {
         /* Registers → Memory */
@@ -121,12 +155,16 @@ static u32 handler_movem(M68020State *cpu, u16 opword) {
         u32  addr;
 
         if (predec) {
-            /* -(An): writes from A7..D0, mask bit 0 = A7, bit 15 = D0 */
+            /* -(An): mask is reversed — bit 0 = A7, bit 15 = D0.
+             * Iterate from bit 0 (A7) upward; each register is pre-decremented
+             * onto the stack. This pushes A7 first (highest addr) ... D0 last.
+             * Map: bit i → register (15 - i) → 0=A7, 1=A6, ..., 15=D0 */
             addr = cpu->A[ea_reg];
-            for (int i = 15; i >= 0; i--) {
+            for (int i = 0; i < 16; i++) {
                 if (!(mask & (1u << i))) continue;
                 addr -= (u32)size;
-                u32 val = (i < 8) ? cpu->D[i] : cpu->A[i - 8];
+                int r = 15 - i;
+                u32 val = (r < 8) ? cpu->D[r] : cpu->A[r - 8];
                 if (size == SIZE_WORD)
                     cpu_write_word(cpu, addr, (u16)val);
                 else

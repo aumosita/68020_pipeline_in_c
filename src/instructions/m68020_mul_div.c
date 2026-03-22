@@ -7,6 +7,56 @@
 #include "m68020_internal.h"
 #include "m68020_ea.h"
 #include "m68020_exceptions.h"
+#include <limits.h>
+
+/* ------------------------------------------------------------------ */
+/* Cycle timing helpers                                                */
+/* ------------------------------------------------------------------ */
+/*
+ * MC68020 multiply timing depends on the source operand value.
+ * MULU.W: 28 + 2*(number of set bits in source) cycles
+ * MULS.W: 28 + 2*(number of 01/10 bit-pair transitions) cycles
+ * MULU.L: 28 + 2*(number of set bits in source) cycles (32-bit: +2 if 64-bit result)
+ * MULS.L: 28 + 2*(number of 01/10 transitions) cycles
+ *
+ * Division timing is more complex but roughly:
+ * DIVU.W: 44 cycles (best), up to 140 (worst)
+ * DIVS.W: 54 cycles (best), up to 158 (worst)
+ * DIVU.L/DIVS.L: 44-90 cycles depending on operands
+ */
+
+static u32 popcount16(u16 v) {
+    u32 count = 0;
+    while (v) { count++; v &= v - 1; }
+    return count;
+}
+
+static u32 popcount32(u32 v) {
+    u32 count = 0;
+    while (v) { count++; v &= v - 1; }
+    return count;
+}
+
+static u32 mulu_w_cycles(u16 src) {
+    return 28u + 2u * popcount16(src);
+}
+
+static u32 muls_w_cycles(u16 src) {
+    /* Count 01/10 bit-pair transitions in 17-bit value (sign + 16 bits) */
+    u32 v = (u32)src | ((src & 0x8000u) ? 0x10000u : 0u);
+    u32 transitions = popcount32((v ^ (v >> 1)) & 0xFFFFu);
+    return 28u + 2u * transitions;
+}
+
+static u32 mulu_l_cycles(u32 src, bool is_64bit) {
+    return 28u + 2u * popcount32(src) + (is_64bit ? 2u : 0u);
+}
+
+static u32 muls_l_cycles(u32 src, bool is_64bit) {
+    u64 v = (u64)src | (((u64)src & 0x80000000uLL) ? 0x100000000uLL : 0u);
+    u32 transitions = popcount32((u32)((v ^ (v >> 1)) & 0xFFFFFFFFu));
+    return 28u + 2u * transitions + (is_64bit ? 2u : 0u);
+}
 
 /* MULU.W <ea>,Dn — unsigned 16×16→32 */
 static u32 handler_mulu_w(M68020State *cpu, u16 opword) {
@@ -15,10 +65,11 @@ static u32 handler_mulu_w(M68020State *cpu, u16 opword) {
     if (!ea_resolve(cpu, EA_SRC_MODE(opword), EA_SRC_REG(opword), SIZE_WORD, &src)) return 70;
     u32 src_val = 0;
     if (!ea_read(cpu, &src, SIZE_WORD, &src_val)) return 70;
-    u32 result = (u16)cpu->D[dn] * (u16)src_val;
+    u16 src16 = (u16)src_val;
+    u32 result = (u16)cpu->D[dn] * src16;
     cpu->D[dn] = result;
     cpu->SR = (cpu->SR & ~0x1Fu) | ccr_logic(result, SIZE_LONG);
-    return 70;
+    return mulu_w_cycles(src16);
 }
 
 /* MULS.W <ea>,Dn — signed 16×16→32 */
@@ -28,10 +79,11 @@ static u32 handler_muls_w(M68020State *cpu, u16 opword) {
     if (!ea_resolve(cpu, EA_SRC_MODE(opword), EA_SRC_REG(opword), SIZE_WORD, &src)) return 70;
     u32 src_val = 0;
     if (!ea_read(cpu, &src, SIZE_WORD, &src_val)) return 70;
-    s32 result = (s32)(s16)(u16)cpu->D[dn] * (s32)(s16)(u16)src_val;
+    u16 src16 = (u16)src_val;
+    s32 result = (s32)(s16)(u16)cpu->D[dn] * (s32)(s16)src16;
     cpu->D[dn] = (u32)result;
     cpu->SR = (cpu->SR & ~0x1Fu) | ccr_logic((u32)result, SIZE_LONG);
-    return 70;
+    return muls_w_cycles(src16);
 }
 
 /* DIVU.W <ea>,Dn — unsigned 32÷16→16:16 (quotient:remainder) */
@@ -46,7 +98,7 @@ static u32 handler_divu_w(M68020State *cpu, u16 opword) {
     u32 dividend = cpu->D[dn];
     u32 quotient = dividend / divisor;
     if (quotient > 0xFFFFu) {
-        cpu->SR |= CCR_V;
+        cpu->SR = (cpu->SR & ~(CCR_N | CCR_Z | CCR_V | CCR_C)) | CCR_V;
         return 140;
     }
     u16 remainder = (u16)(dividend % divisor);
@@ -68,7 +120,7 @@ static u32 handler_divs_w(M68020State *cpu, u16 opword) {
     s32 dividend = (s32)cpu->D[dn];
     s32 quotient = dividend / divisor;
     if (quotient > 32767 || quotient < -32768) {
-        cpu->SR |= CCR_V;
+        cpu->SR = (cpu->SR & ~(CCR_N | CCR_Z | CCR_V | CCR_C)) | CCR_V;
         return 158;
     }
     s16 remainder = (s16)(dividend % divisor);
@@ -104,6 +156,8 @@ static u32 handler_mul_l(M68020State *cpu, u16 opword) {
     u16 ccr;
     if (s) {
         s64 result = (s64)(s32)cpu->D[dl] * (s64)(s32)src_val;
+        /* Check overflow BEFORE writing registers */
+        bool overflow = !l && (result < (s64)INT32_MIN || result > (s64)INT32_MAX);
         if (l) {
             cpu->D[dl] = (u32)(u64)result;          /* low 32 bits  */
             cpu->D[dh] = (u32)((u64)result >> 32);  /* high 32 bits */
@@ -112,10 +166,11 @@ static u32 handler_mul_l(M68020State *cpu, u16 opword) {
         }
         u32 vis = l ? (u32)((u64)result >> 32) : (u32)(s32)result;
         ccr = ccr_logic(vis, SIZE_LONG);
-        /* V=1 if result doesn't fit in 32 bits (for 32-bit form) */
-        if (!l && ((s64)(s32)cpu->D[dl] != result)) ccr |= CCR_V;
+        if (overflow) ccr |= CCR_V;
     } else {
         u64 result = (u64)cpu->D[dl] * (u64)src_val;
+        /* Check overflow BEFORE writing registers */
+        bool overflow = !l && (result >> 32);
         if (l) {
             cpu->D[dl] = (u32)result;          /* low 32 bits  */
             cpu->D[dh] = (u32)(result >> 32);  /* high 32 bits */
@@ -124,10 +179,11 @@ static u32 handler_mul_l(M68020State *cpu, u16 opword) {
         }
         u32 vis = l ? (u32)(result >> 32) : (u32)result;
         ccr = ccr_logic(vis, SIZE_LONG);
-        if (!l && (result >> 32)) ccr |= CCR_V;
+        if (overflow) ccr |= CCR_V;
     }
     cpu->SR = (cpu->SR & ~0x1Fu) | ccr;
-    return 43;
+    u32 cyc = s ? muls_l_cycles(src_val, l) : mulu_l_cycles(src_val, l);
+    return cyc;
 }
 
 /* ------------------------------------------------------------------ */
@@ -170,7 +226,7 @@ static u32 handler_div_l(M68020State *cpu, u16 opword) {
 
         /* Overflow check: quotient must fit in 32 bits */
         if (quot > (s64)0x7FFFFFFFll || quot < (s64)(-0x80000000ll - 1)) {
-            cpu->SR |= CCR_V;
+            cpu->SR = (cpu->SR & ~(CCR_N | CCR_Z | CCR_V | CCR_C)) | CCR_V;
             return 84;
         }
         cpu->D[dq] = (u32)(s32)quot;
@@ -189,7 +245,7 @@ static u32 handler_div_l(M68020State *cpu, u16 opword) {
         u32 rem  = (u32)(dividend % divisor);
 
         if (quot > 0xFFFFFFFFuLL) {
-            cpu->SR |= CCR_V;
+            cpu->SR = (cpu->SR & ~(CCR_N | CCR_Z | CCR_V | CCR_C)) | CCR_V;
             return 84;
         }
         cpu->D[dq] = (u32)quot;

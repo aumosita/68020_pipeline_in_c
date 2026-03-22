@@ -7,6 +7,8 @@ SRCS = \
     src/cpu/m68020_core.c \
     src/cpu/m68020_state.c \
     src/cpu/m68020_pipeline.c \
+    src/cpu/m68020_pipeline_stages.c \
+    src/cpu/m68020_cycle_timing.c \
     src/cpu/m68020_cache.c \
     src/cpu/m68020_ea.c \
     src/cpu/m68020_exceptions.c \

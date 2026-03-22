@@ -63,9 +63,10 @@ static u32 do_shift(M68020State *cpu, u16 opword) {
 
     if (count == 0) {
         /* Shift by 0: C=0, X unchanged, N/Z from value, V=0 */
-        if (!result) ccr |= CCR_Z;
-        if (result & sign) ccr |= CCR_N;
-        cpu->SR = ccr;
+        u16 ccr0 = cpu->SR & ~0x0Fu;  /* preserve X, clear N,Z,V,C */
+        if (!result) ccr0 |= CCR_Z;
+        if (result & sign) ccr0 |= CCR_N;
+        cpu->SR = ccr0;
         return 8;
     }
 

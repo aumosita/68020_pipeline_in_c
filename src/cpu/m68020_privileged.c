@@ -148,7 +148,7 @@ static u32 handler_movec(M68020State *cpu, u16 opword) {
         switch (ctrl_id) {
             case 0x000: cpu->SFC  = *gp_reg & 7u; break;
             case 0x001: cpu->DFC  = *gp_reg & 7u; break;
-            case 0x002: cpu->CACR = *gp_reg; break;
+            case 0x002: icache_update_cacr(cpu, *gp_reg); break;
             case 0x800: cpu->USP  = *gp_reg; break;
             case 0x801: cpu->VBR  = *gp_reg; break;
             case 0x802: cpu->CAAR = *gp_reg; break;

@@ -124,7 +124,9 @@ static u32 handler_bcc(M68020State *cpu, u16 opword) {
         if (SR_T0(cpu->SR)) cpu->trace_pending = true;
         return 10;  /* taken */
     }
-    return 8;  /* not taken (fall through, prefetch already advanced) */
+    /* Not taken: byte displacement = 8, word/long displacement = 12
+     * (extension words were consumed but branch not taken) */
+    return (disp8 != 0x00 && disp8 != 0xFF) ? 8 : 12;
 }
 
 /* ------------------------------------------------------------------ */

@@ -77,6 +77,38 @@ struct M68020State {
     PrefetchQueue    prefetch;
     InstructionCache icache;
 
+    /* -------- Pipeline Overlap Accounting -------- */
+    /*
+     * The MC68020 3-stage pipeline (B/C/E) allows the bus controller
+     * (B-stage) to prefetch while the execution unit (E-stage) runs.
+     * We model this overlap without full cycle-by-cycle simulation:
+     *
+     * b_avail_cycles: How many cycles the B-stage had to prefetch
+     *   during the previous instruction's E-stage.  Subtracted from
+     *   the next instruction's bus fetch cost.
+     *
+     * last_e_cycles: The E-stage cycle count of the previous instruction.
+     *   This becomes b_avail_cycles for the next instruction.
+     *
+     * e_bus_cycles: Bus cycles consumed by the E-stage for data access
+     *   (not instruction fetch). During these cycles, B-stage cannot
+     *   use the bus → reduces effective overlap.
+     *
+     * flush_pending: Set by pipeline_flush() when a branch is taken.
+     *   The next instruction pays a refill penalty instead of getting
+     *   overlap benefit.
+     */
+    u32  b_avail_cycles;
+    u32  last_e_cycles;
+    u32  e_bus_cycles;
+    bool flush_pending;
+
+    /* Phase 6: Cache miss / prefetch depth tracking */
+    u32  b_fetch_cycles;       /* ifetch bus cycles this instruction (miss=4, hit=0) */
+    u32  last_b_fetch_cycles;  /* saved from previous instruction */
+    u8   words_consumed;       /* prefetch words consumed this instruction */
+    u8   last_words_consumed;  /* saved from previous instruction */
+
     /* -------- Execution control -------- */
     u64  cycle_count;
     u32  instr_count;
@@ -135,6 +167,16 @@ struct M68020State {
 #define SR_VALID_MASK  0xF71Fu
 
 /* ------------------------------------------------------------------ */
+/* Instruction Cache                                                    */
+/* ------------------------------------------------------------------ */
+
+bool icache_lookup(M68020State *cpu, u32 addr, u16 *val);
+void icache_fill(M68020State *cpu, u32 addr, u32 longword);
+void icache_invalidate_all(M68020State *cpu);
+void icache_invalidate_entry(M68020State *cpu, u32 addr);
+void icache_update_cacr(M68020State *cpu, u32 new_cacr);
+
+/* ------------------------------------------------------------------ */
 /* Pipeline                                                             */
 /* ------------------------------------------------------------------ */
 
@@ -151,6 +193,34 @@ void pipeline_flush(M68020State *cpu, u32 new_pc);
 
 /* Fill the prefetch queue up to PREFETCH_DEPTH words if possible. */
 void pipeline_refill(M68020State *cpu);
+
+/* Partial refill: fill up to n words (for minimal B-stage restart). */
+void pipeline_refill_n(M68020State *cpu, u8 n);
+
+/* ------------------------------------------------------------------ */
+/* Pipeline Overlap Accounting                                         */
+/* ------------------------------------------------------------------ */
+
+/* Called before each instruction to compute how many prefetch cycles
+ * were overlapped with the previous E-stage execution. */
+u32  pipeline_overlap_begin(M68020State *cpu);
+
+/* Called after each instruction to record its E-stage timing for
+ * the next instruction's overlap calculation. */
+void pipeline_overlap_end(M68020State *cpu, u32 e_cycles, u32 e_bus_cycles);
+
+/* Track data bus cycles consumed by E-stage (called from bus helpers) */
+void pipeline_note_data_bus(M68020State *cpu, u32 cycles);
+
+/* ------------------------------------------------------------------ */
+/* Cycle Timing                                                        */
+/* ------------------------------------------------------------------ */
+
+/* C-stage decode penalty for a given EA mode (mode, reg fields) */
+u32  ea_decode_cost(u8 mode, u8 reg);
+
+/* Extract EA from standard opword bits [5:0] and return decode cost */
+u32  opword_decode_cost(u16 opword);
 
 /* ------------------------------------------------------------------ */
 /* Bus helpers (internal — carry FC, alignment checks, etc.)           */

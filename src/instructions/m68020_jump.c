@@ -11,9 +11,29 @@
 /* JMP — Jump                                                          */
 /* ------------------------------------------------------------------ */
 
+/* JMP cycle cost per EA mode (MC68020 User's Manual Table 9-11) */
+static u32 jmp_cycles(u8 mode, u8 reg) {
+    switch (mode) {
+    case EA_MODE_IND:  return 8;   /* (An) */
+    case EA_MODE_D16:  return 10;  /* (d16,An) */
+    case EA_MODE_IDX:  return 14;  /* (d8,An,Xn) */
+    case EA_MODE_EXT:
+        switch (reg) {
+        case EA_EXT_ABSW:   return 10;  /* (xxx).W */
+        case EA_EXT_ABSL:   return 12;  /* (xxx).L */
+        case EA_EXT_D16PC:  return 10;  /* (d16,PC) */
+        case EA_EXT_IDXPC:  return 14;  /* (d8,PC,Xn) */
+        }
+        break;
+    }
+    return 8;
+}
+
 static u32 handler_jmp(M68020State *cpu, u16 opword) {
+    u8 mode = EA_SRC_MODE(opword);
+    u8 reg  = EA_SRC_REG(opword);
     EADesc ea;
-    if (!ea_resolve(cpu, EA_SRC_MODE(opword), EA_SRC_REG(opword), SIZE_LONG, &ea))
+    if (!ea_resolve(cpu, mode, reg, SIZE_LONG, &ea))
         return 8;
     if (ea.kind != EAK_Mem) {
         exception_process(cpu, VEC_ILLEGAL_INSN);
@@ -22,16 +42,19 @@ static u32 handler_jmp(M68020State *cpu, u16 opword) {
     pipeline_flush(cpu, ea.address);
     cpu->PC = ea.address;
     if (SR_T0(cpu->SR)) cpu->trace_pending = true;
-    return 8;
+    return jmp_cycles(mode, reg);
 }
 
 /* ------------------------------------------------------------------ */
 /* JSR — Jump to Subroutine                                            */
 /* ------------------------------------------------------------------ */
 
+/* JSR cycle cost = JMP cost + 8 (push return address overhead) */
 static u32 handler_jsr(M68020State *cpu, u16 opword) {
+    u8 mode = EA_SRC_MODE(opword);
+    u8 reg  = EA_SRC_REG(opword);
     EADesc ea;
-    if (!ea_resolve(cpu, EA_SRC_MODE(opword), EA_SRC_REG(opword), SIZE_LONG, &ea))
+    if (!ea_resolve(cpu, mode, reg, SIZE_LONG, &ea))
         return 16;
     if (ea.kind != EAK_Mem) {
         exception_process(cpu, VEC_ILLEGAL_INSN);
@@ -45,7 +68,7 @@ static u32 handler_jsr(M68020State *cpu, u16 opword) {
     pipeline_flush(cpu, ea.address);
     cpu->PC = ea.address;
     if (SR_T0(cpu->SR)) cpu->trace_pending = true;
-    return 16;
+    return jmp_cycles(mode, reg) + 8;
 }
 
 /* ------------------------------------------------------------------ */

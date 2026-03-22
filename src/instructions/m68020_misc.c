@@ -323,8 +323,18 @@ void m68020_misc_install_handlers(InsnHandler *t) {
     for (u32 ea = 0; ea < 64; ea++)
         t[0x4AC0u | ea] = handler_tas;
 
-    /* EXG: 1100 DDD1 mmmmm rrr */
-    for (u32 op = 0xC100u; op <= 0xC1FFu; op++) t[op] = handler_exg;
+    /* EXG: 1100 DDD1 OPMODE rrr
+     * Valid OPMODE: 01000=Dx,Dy  01001=Ax,Ay  10001=Dx,Ay
+     * Only install for these specific opmode values to avoid
+     * clobbering MULS.W (which shares the 1100 DDD1 prefix). */
+    for (u32 dx = 0; dx < 8; dx++) {
+        for (u32 ry = 0; ry < 8; ry++) {
+            u32 base = 0xC100u | (dx << 9) | ry;
+            t[base | (0x08u << 3)] = handler_exg;  /* 01000: Dx,Dy */
+            t[base | (0x09u << 3)] = handler_exg;  /* 01001: Ax,Ay */
+            t[base | (0x11u << 3)] = handler_exg;  /* 10001: Dx,Ay */
+        }
+    }
 
     /* LEA: 0100 DDD1 11 ea (control modes) */
     for (u32 an = 0; an < 8; an++) {
