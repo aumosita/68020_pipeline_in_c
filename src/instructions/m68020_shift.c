@@ -135,7 +135,7 @@ static u32 do_shift(M68020State *cpu, u16 opword) {
         }
         return 8;
 
-    case 3: /* RO — Rotate */
+    case 3: /* RO — Rotate (X not affected) */
         if (dir) { /* left */
             count &= (bits - 1);
             if (count)
@@ -147,10 +147,13 @@ static u32 do_shift(M68020State *cpu, u16 opword) {
                 result = ((result >> count) | (result << (bits - count))) & m;
             last_out = (result >> (bits - 1)) & 1u;
         }
-        if (last_out) ccr |= CCR_C;
-        if (!result) ccr |= CCR_Z;
-        if (result & sign) ccr |= CCR_N;
-        cpu->SR = ccr;
+        {
+            u16 ro_ccr = cpu->SR & ~0x0Fu;  /* preserve X */
+            if (last_out) ro_ccr |= CCR_C;
+            if (!result) ro_ccr |= CCR_Z;
+            if (result & sign) ro_ccr |= CCR_N;
+            cpu->SR = ro_ccr;
+        }
         if (is_mem_shift) {
             EADesc dst;
             ea_resolve(cpu, EA_SRC_MODE(opword), EA_SRC_REG(opword), sz, &dst);

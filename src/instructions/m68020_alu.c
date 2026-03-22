@@ -369,7 +369,9 @@ static u32 handler_ext(M68020State *cpu, u16 opword) {
         result = (cpu->D[dn] & 0xFFFF0000u) | w;
     }
     cpu->D[dn] = result;
-    cpu->SR = (cpu->SR & ~0x0Fu) | ccr_logic(result, SIZE_LONG);
+    /* EXT.W sets flags on the word result; EXT.L on the long result */
+    BusSize fsz = (opword & 0x0040u) ? SIZE_LONG : SIZE_WORD;
+    cpu->SR = (cpu->SR & ~0x0Fu) | ccr_logic(result, fsz);
     return 4;
 }
 
