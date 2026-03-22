@@ -132,6 +132,66 @@ static uint16_t safe_opcodes[] = {
 };
 #define NUM_SAFE_OPCODES (sizeof safe_opcodes / sizeof safe_opcodes[0])
 
+/*
+ * Memory EA opcodes: these access memory through An registers.
+ * We set An to a known data area and populate it.
+ * Format: { opcode, ext_words, needs_src_mem, needs_dst_mem }
+ */
+typedef struct {
+    uint16_t opcode;
+    uint8_t  ext_words;  /* extension words after opcode (d16, imm, etc.) */
+    uint16_t ext[2];     /* extension word values */
+    int      data_reg;   /* An register used for memory access (-1 if none) */
+    const char *desc;
+} MemOpcode;
+
+static MemOpcode mem_opcodes[] = {
+    /* MOVE.L (A0),D1: 0x2210 — read long from (A0) */
+    { 0x2210, 0, {0}, 0, "MOVE.L (A0),D1" },
+    /* MOVE.L D0,(A1): 0x2280 — write long to (A1) */
+    { 0x2280, 0, {0}, 1, "MOVE.L D0,(A1)" },
+    /* MOVE.L (A0)+,D2: 0x2418 — read + postinc */
+    { 0x2418, 0, {0}, 0, "MOVE.L (A0)+,D2" },
+    /* MOVE.L D3,-(A1): 0x2303 — predec + write... wait, encoding:
+     * MOVE.L src,dst: dst mode=100(predec) reg=A1(001), src=D3 mode=000 reg=011
+     * = 0010 001 100 000 011 = 0x2303? No.
+     * MOVE.L dst_reg dst_mode src_mode src_reg
+     * bits: 0010 DDD ddd SSS sss
+     * dst_reg=A1=001, dst_mode=100(predec), src_mode=000(Dn), src_reg=011(D3)
+     * = 0010 001 100 000 011 = 0x2303 */
+    { 0x2303, 0, {0}, 1, "MOVE.L D3,-(A1)" },
+    /* ADD.L (A0),D0: 0xD090 — add memory to reg */
+    { 0xD090, 0, {0}, 0, "ADD.L (A0),D0" },
+    /* ADD.L D0,(A1): 0xD190 — wait, 0xD190 = ADD.L D0,(A0).
+     * ADD.L D0,(A1): 1101 000 1 10 001 001... no.
+     * ADD.L Dn,<ea>: 1101 rrr 1 ss ea. rrr=D0=000, ss=10, ea=010 001=(A1)
+     * = 1101 000 1 10 010 001 = 0xD191 */
+    { 0xD191, 0, {0}, 1, "ADD.L D0,(A1)" },
+    /* SUB.L (A0),D2: 0x9490 */
+    { 0x9490, 0, {0}, 0, "SUB.L (A0),D2" },
+    /* CMP.L (A0),D0: 0xB090 */
+    { 0xB090, 0, {0}, 0, "CMP.L (A0),D0" },
+    /* AND.L (A0),D3: 0xC690 */
+    { 0xC690, 0, {0}, 0, "AND.L (A0),D3" },
+    /* OR.L (A0),D4: 0x8890 */
+    { 0x8890, 0, {0}, 0, "OR.L (A0),D4" },
+    /* TST.L (A0): 0x4A90 */
+    { 0x4A90, 0, {0}, 0, "TST.L (A0)" },
+    /* NEG.L (A0): 0x4490 */
+    { 0x4490, 0, {0}, 0, "NEG.L (A0)" },
+    /* NOT.L (A0): 0x4690 */
+    { 0x4690, 0, {0}, 0, "NOT.L (A0)" },
+    /* CLR.L (A0): 0x4290 */
+    { 0x4290, 0, {0}, 0, "CLR.L (A0)" },
+    /* MOVE.L (d16,A0),D0: 0x2028 + disp16 */
+    { 0x2028, 1, {0x0010}, 0, "MOVE.L (16,A0),D0" },
+    /* MOVE.L D0,(d16,A1): 0x2340 + disp16 -- encoding:
+     * dst_reg=A1=001, dst_mode=101(d16), src_mode=000, src_reg=000
+     * = 0010 001 101 000 000 = 0x2340 */
+    { 0x2340, 1, {0x0010}, 1, "MOVE.L D0,(16,A1)" },
+};
+#define NUM_MEM_OPCODES (sizeof mem_opcodes / sizeof mem_opcodes[0])
+
 /* ------------------------------------------------------------------ */
 /* Main comparison loop                                                */
 /* ------------------------------------------------------------------ */
@@ -255,10 +315,142 @@ int main(int argc, char **argv) {
         }
     }
 
-    printf("\n%d/%d passed", pass, pass+fail);
+    printf("Register ops: %d/%d passed", pass, pass+fail);
     if (fail) printf(" (%d FAILED)", fail);
     printf("\n");
 
+    /* ---- Phase 2: Memory EA tests ---- */
+    int mpass = 0, mfail = 0;
+    uint32_t data_area = 0x2000; /* data at 0x2000-0x20FF */
+
+    for (int t = 0; t < num_tests; t++) {
+        MemOpcode *mop = &mem_opcodes[rand() % NUM_MEM_OPCODES];
+
+        uint32_t d[8], a[8];
+        for (int i = 0; i < 8; i++) d[i] = xrand();
+        /* Set all An to the data area (even, within bounds) */
+        for (int i = 0; i < 8; i++) a[i] = data_area;
+        uint16_t sr = 0x2700 | (xrand() & 0x1F);
+
+        /* Clear memory, set up vectors and code */
+        memset(g_mem, 0, MEM_SIZE);
+        g_mem[0]=0;g_mem[1]=0;g_mem[2]=0x80;g_mem[3]=0;
+        g_mem[4]=(pc_base>>24);g_mem[5]=(pc_base>>16);g_mem[6]=(pc_base>>8);g_mem[7]=pc_base;
+
+        /* Place random data in the data area */
+        for (int j = 0; j < 256; j++)
+            g_mem[data_area + j] = (uint8_t)(xrand() & 0xFF);
+
+        /* Place opcode + extension words */
+        g_mem[pc_base]   = mop->opcode >> 8;
+        g_mem[pc_base+1] = mop->opcode & 0xFF;
+        int off = 2;
+        for (int j = 0; j < mop->ext_words; j++) {
+            g_mem[pc_base+off]   = mop->ext[j] >> 8;
+            g_mem[pc_base+off+1] = mop->ext[j] & 0xFF;
+            off += 2;
+        }
+        /* NOPs after */
+        for (int j = 0; j < 50; j++) {
+            g_mem[pc_base+off+j*2]   = 0x4E;
+            g_mem[pc_base+off+j*2+1] = 0x71;
+        }
+
+        /* ---- Musashi ---- */
+        m68k_set_reg(M68K_REG_SR, sr);
+        m68k_set_reg(M68K_REG_PC, pc_base);
+        for (int i = 0; i < 8; i++) m68k_set_reg(M68K_REG_D0+i, d[i]);
+        for (int i = 0; i < 7; i++) m68k_set_reg(M68K_REG_A0+i, a[i]);
+        m68k_set_reg(M68K_REG_A7, 0x8000);
+
+        static uint8_t mem_before2[MEM_SIZE];
+        memcpy(mem_before2, g_mem, MEM_SIZE);
+
+        m68k_execute(1);
+
+        /* Save Musashi results */
+        uint32_t mm_d[8], mm_a[7];
+        uint16_t mm_sr;
+        for (int i = 0; i < 8; i++) mm_d[i] = m68k_get_reg(NULL, M68K_REG_D0+i);
+        for (int i = 0; i < 7; i++) mm_a[i] = m68k_get_reg(NULL, M68K_REG_A0+i);
+        mm_sr = (uint16_t)m68k_get_reg(NULL, M68K_REG_SR);
+
+        /* Save Musashi's memory state */
+        static uint8_t musashi_mem[MEM_SIZE];
+        memcpy(musashi_mem, g_mem, MEM_SIZE);
+
+        /* ---- Our emulator ---- */
+        memcpy(g_mem, mem_before2, MEM_SIZE);
+        our->SR = sr;
+        our->PC = pc_base;
+        for (int i = 0; i < 8; i++) our->D[i] = d[i];
+        for (int i = 0; i < 7; i++) our->A[i] = a[i];
+        our->A[7] = 0x8000;
+        our->ISP = 0x8000;
+        our->MSP = 0x8000;
+        our->halted = false;
+        our->stopped = false;
+        our->in_exception = false;
+        our->flush_pending = false;
+        pipeline_flush(our, pc_base);
+
+        m68020_step(our);
+
+        /* ---- Compare registers ---- */
+        int mismatch = 0;
+        char errbuf[2048] = "";
+        int ep = 0;
+
+        for (int i = 0; i < 8; i++) {
+            if (our->D[i] != mm_d[i]) {
+                ep += snprintf(errbuf+ep, sizeof(errbuf)-ep,
+                    "D%d:0x%X!=0x%X ", i, our->D[i], mm_d[i]);
+                mismatch++;
+            }
+        }
+        for (int i = 0; i < 7; i++) {
+            if (our->A[i] != mm_a[i]) {
+                ep += snprintf(errbuf+ep, sizeof(errbuf)-ep,
+                    "A%d:0x%X!=0x%X ", i, our->A[i], mm_a[i]);
+                mismatch++;
+            }
+        }
+        if ((our->SR & 0x1F) != (mm_sr & 0x1F)) {
+            ep += snprintf(errbuf+ep, sizeof(errbuf)-ep,
+                "SR:0x%04X!=0x%04X ", our->SR, mm_sr);
+            mismatch++;
+        }
+
+        /* Compare data area memory */
+        for (int j = 0; j < 256; j++) {
+            if (g_mem[data_area+j] != musashi_mem[data_area+j]) {
+                ep += snprintf(errbuf+ep, sizeof(errbuf)-ep,
+                    "MEM[%X]:0x%02X!=0x%02X ",
+                    data_area+j, g_mem[data_area+j], musashi_mem[data_area+j]);
+                mismatch++;
+                if (mismatch > 5) break; /* don't flood */
+            }
+        }
+
+        if (mismatch) {
+            mfail++;
+            if (mfail <= 20)
+                printf("MEM_FAIL [%d] %s: %s\n", t, mop->desc, errbuf);
+        } else {
+            mpass++;
+        }
+    }
+
+    printf("Memory ops:   %d/%d passed", mpass, mpass+mfail);
+    if (mfail) printf(" (%d FAILED)", mfail);
+    printf("\n");
+
+    int total_pass = pass + mpass;
+    int total_fail = fail + mfail;
+    printf("\nTOTAL: %d/%d passed", total_pass, total_pass+total_fail);
+    if (total_fail) printf(" (%d FAILED)", total_fail);
+    printf("\n");
+
     m68020_destroy(our);
-    return fail ? 1 : 0;
+    return total_fail ? 1 : 0;
 }
