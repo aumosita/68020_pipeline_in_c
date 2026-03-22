@@ -37,10 +37,11 @@ OBJS = $(SRCS:.c=.o)
 LIB  = libm68020.a
 TEST = test_runner
 TEST_SYS = test_systematic
+TEST_VEC = test_vector_runner
 
-.PHONY: all clean test test-all
+.PHONY: all clean test test-all test-vectors
 
-all: $(TEST) $(TEST_SYS)
+all: $(TEST) $(TEST_SYS) $(TEST_VEC)
 
 $(LIB): $(OBJS)
 	ar rcs $@ $^
@@ -51,12 +52,18 @@ $(TEST): tests/integration/test_runner.c $(LIB)
 $(TEST_SYS): tests/validation/test_systematic.c $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< -L. -lm68020
 
+$(TEST_VEC): tests/vectors/test_vector_runner.c $(LIB)
+	$(CC) $(CFLAGS) -o $@ $< -L. -lm68020
+
 %.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 test: $(TEST) $(TEST_SYS)
 	./$(TEST)
 	./$(TEST_SYS)
+
+test-vectors: $(TEST_VEC)
+	python3 tests/vectors/run_vectors.py
 
 DEPS = $(OBJS:.o=.d)
 -include $(DEPS)

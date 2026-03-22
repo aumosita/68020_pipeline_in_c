@@ -59,9 +59,9 @@ static u32 do_move(M68020State *cpu, u16 opword, BusSize size) {
     if (!ea_write(cpu, &dst, size, val))
         return 4;
 
-    /* Update CCR: N, Z cleared; C=0, V=0 */
+    /* Update CCR: N, Z from result; C=0, V=0; X unchanged */
     u16 ccr = ccr_logic(val, size);
-    cpu->SR = (cpu->SR & ~0x1Fu) | ccr;
+    cpu->SR = (cpu->SR & ~0x0Fu) | ccr;
 
     return 4;
 }
@@ -86,9 +86,9 @@ static u32 handler_moveq(M68020State *cpu, u16 opword) {
 
     cpu->D[dn] = (u32)val;
 
-    /* CCR: N, Z set from result; C=0, V=0 */
+    /* CCR: N, Z set from result; C=0, V=0; X unchanged */
     u16 ccr = ccr_logic((u32)val, SIZE_LONG);
-    cpu->SR = (cpu->SR & ~0x1Fu) | ccr;
+    cpu->SR = (cpu->SR & ~0x0Fu) | ccr;
 
     return 4;
 }

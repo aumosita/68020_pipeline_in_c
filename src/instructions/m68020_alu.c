@@ -192,7 +192,9 @@ static u32 do_imm_op(M68020State *cpu, u16 opword, int op) {
     }
 
     if (!ea_write(cpu, &dst, sz, result)) return 8;
-    cpu->SR = (cpu->SR & ~0x1Fu) | ccr;
+    /* ADDI/SUBI (ops 6,7) change X; ORI/ANDI/EORI (ops 0,1,5) preserve X */
+    u16 mask = (op == 6 || op == 7) ? ~0x1Fu : ~0x0Fu;
+    cpu->SR = (cpu->SR & mask) | ccr;
     return 12;
 }
 
@@ -269,7 +271,7 @@ static u32 do_logic(M68020State *cpu, u16 opword, u8 op) {
             case SIZE_WORD: cpu->D[dn] = (cpu->D[dn] & 0xFFFF0000u) | (result & 0xFFFFu); break;
             case SIZE_LONG: cpu->D[dn] = result; break;
         }
-        cpu->SR = (cpu->SR & ~0x1Fu) | ccr_logic(result, sz);
+        cpu->SR = (cpu->SR & ~0x0Fu) | ccr_logic(result, sz);
     } else {
         EADesc dst;
         if (!ea_resolve(cpu, ea_mode, ea_reg, sz, &dst)) return 8;
@@ -280,7 +282,7 @@ static u32 do_logic(M68020State *cpu, u16 opword, u8 op) {
                      (op == 1) ? (dst_val & src_val) :
                                  (dst_val ^ src_val);
         if (!ea_write(cpu, &dst, sz, result)) return 8;
-        cpu->SR = (cpu->SR & ~0x1Fu) | ccr_logic(result, sz);
+        cpu->SR = (cpu->SR & ~0x0Fu) | ccr_logic(result, sz);
     }
     return 8;
 }
@@ -302,7 +304,7 @@ static u32 handler_not(M68020State *cpu, u16 opword) {
     if (!ea_read(cpu, &dst, sz, &val)) return 8;
     u32 result = ~val;
     if (!ea_write(cpu, &dst, sz, result)) return 8;
-    cpu->SR = (cpu->SR & ~0x1Fu) | ccr_logic(result, sz);
+    cpu->SR = (cpu->SR & ~0x0Fu) | ccr_logic(result, sz);
     return 8;
 }
 
@@ -346,7 +348,7 @@ static u32 handler_clr(M68020State *cpu, u16 opword) {
     if (!ea_resolve(cpu, EA_SRC_MODE(opword), EA_SRC_REG(opword), sz, &dst)) return 8;
     if (!ea_write(cpu, &dst, sz, 0)) return 8;
     /* CLR: N=0, Z=1, V=0, C=0 */
-    cpu->SR = (cpu->SR & ~0x1Fu) | CCR_Z;
+    cpu->SR = (cpu->SR & ~0x0Fu) | CCR_Z;
     return 8;
 }
 
@@ -367,7 +369,7 @@ static u32 handler_ext(M68020State *cpu, u16 opword) {
         result = (cpu->D[dn] & 0xFFFF0000u) | w;
     }
     cpu->D[dn] = result;
-    cpu->SR = (cpu->SR & ~0x1Fu) | ccr_logic(result, SIZE_LONG);
+    cpu->SR = (cpu->SR & ~0x0Fu) | ccr_logic(result, SIZE_LONG);
     return 4;
 }
 
@@ -376,7 +378,7 @@ static u32 handler_extb(M68020State *cpu, u16 opword) {
     u8 dn = opword & 7u;
     u32 result = (u32)(s32)(s8)(u8)cpu->D[dn];
     cpu->D[dn] = result;
-    cpu->SR = (cpu->SR & ~0x1Fu) | ccr_logic(result, SIZE_LONG);
+    cpu->SR = (cpu->SR & ~0x0Fu) | ccr_logic(result, SIZE_LONG);
     return 4;
 }
 
@@ -388,7 +390,7 @@ static u32 handler_swap(M68020State *cpu, u16 opword) {
     u8 dn = opword & 7u;
     u32 val = cpu->D[dn];
     cpu->D[dn] = (val << 16) | (val >> 16);
-    cpu->SR = (cpu->SR & ~0x1Fu) | ccr_logic(cpu->D[dn], SIZE_LONG);
+    cpu->SR = (cpu->SR & ~0x0Fu) | ccr_logic(cpu->D[dn], SIZE_LONG);
     return 4;
 }
 

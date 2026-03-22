@@ -100,6 +100,18 @@ static void region_write_byte(MemRegion *r, u32 offset, u8 val) {
 /* Bus interface callbacks                                             */
 /* ------------------------------------------------------------------ */
 
+/*
+ * Read a single byte from the memory map, looking up the region for
+ * the given absolute address.  Returns 0xFF on unmapped access.
+ */
+static u8 memmap_read_byte(M68020MemMap *map, u32 addr, u32 *ws) {
+    MemRegion *r = find_region(map, addr);
+    if (!r) return 0xFF;
+    if (ws && r->wait_states > *ws) *ws = r->wait_states;
+    u32 offset = addr - r->base;
+    return (offset < r->size) ? r->data[offset] : 0xFF;
+}
+
 static BusResult memmap_read(void *ctx, u32 addr, BusSize size,
                               FunctionCode fc, u32 *val, u32 *cycles_out) {
     M68020MemMap *map = (M68020MemMap *)ctx;
@@ -119,23 +131,36 @@ static BusResult memmap_read(void *ctx, u32 addr, BusSize size,
         return r->io_read(r->io_ctx, offset, size, val);
     }
 
-    /* RAM or ROM: big-endian byte read */
+    /* RAM or ROM: read byte-by-byte, each byte looks up its own region.
+     * This correctly handles accesses that span region boundaries. */
     switch (size) {
     case SIZE_BYTE:
-        *val = region_read_byte(r, offset);
+        *val = memmap_read_byte(map, addr, cycles_out);
         break;
     case SIZE_WORD:
-        *val = ((u32)region_read_byte(r, offset) << 8)
-             | region_read_byte(r, offset + 1);
+        *val = ((u32)memmap_read_byte(map, addr,     cycles_out) << 8)
+             |  (u32)memmap_read_byte(map, addr + 1, cycles_out);
         break;
     case SIZE_LONG:
-        *val = ((u32)region_read_byte(r, offset)     << 24)
-             | ((u32)region_read_byte(r, offset + 1) << 16)
-             | ((u32)region_read_byte(r, offset + 2) <<  8)
-             |  (u32)region_read_byte(r, offset + 3);
+        *val = ((u32)memmap_read_byte(map, addr,     cycles_out) << 24)
+             | ((u32)memmap_read_byte(map, addr + 1, cycles_out) << 16)
+             | ((u32)memmap_read_byte(map, addr + 2, cycles_out) <<  8)
+             |  (u32)memmap_read_byte(map, addr + 3, cycles_out);
         break;
     }
     return BUS_OK;
+}
+
+/*
+ * Write a single byte to the memory map, looking up the correct region.
+ */
+static void memmap_write_byte(M68020MemMap *map, u32 addr, u8 val, u32 *ws) {
+    MemRegion *r = find_region(map, addr);
+    if (!r) return;
+    if (ws && r->wait_states > *ws) *ws = r->wait_states;
+    if (r->type == REGION_ROM) return;  /* ROM: silently ignore */
+    u32 offset = addr - r->base;
+    if (offset < r->size) r->data[offset] = val;
 }
 
 static BusResult memmap_write(void *ctx, u32 addr, BusSize size,
@@ -154,20 +179,20 @@ static BusResult memmap_write(void *ctx, u32 addr, BusSize size,
         return r->io_write(r->io_ctx, offset, size, val);
     }
 
-    /* RAM or ROM: big-endian byte write */
+    /* RAM or ROM: write byte-by-byte, each byte resolves its own region. */
     switch (size) {
     case SIZE_BYTE:
-        region_write_byte(r, offset, (u8)val);
+        memmap_write_byte(map, addr, (u8)val, cycles_out);
         break;
     case SIZE_WORD:
-        region_write_byte(r, offset,     (u8)(val >> 8));
-        region_write_byte(r, offset + 1, (u8)(val));
+        memmap_write_byte(map, addr,     (u8)(val >> 8), cycles_out);
+        memmap_write_byte(map, addr + 1, (u8)(val),      cycles_out);
         break;
     case SIZE_LONG:
-        region_write_byte(r, offset,     (u8)(val >> 24));
-        region_write_byte(r, offset + 1, (u8)(val >> 16));
-        region_write_byte(r, offset + 2, (u8)(val >>  8));
-        region_write_byte(r, offset + 3, (u8)(val));
+        memmap_write_byte(map, addr,     (u8)(val >> 24), cycles_out);
+        memmap_write_byte(map, addr + 1, (u8)(val >> 16), cycles_out);
+        memmap_write_byte(map, addr + 2, (u8)(val >>  8), cycles_out);
+        memmap_write_byte(map, addr + 3, (u8)(val),       cycles_out);
         break;
     }
     return BUS_OK;

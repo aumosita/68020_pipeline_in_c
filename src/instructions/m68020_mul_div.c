@@ -68,7 +68,7 @@ static u32 handler_mulu_w(M68020State *cpu, u16 opword) {
     u16 src16 = (u16)src_val;
     u32 result = (u16)cpu->D[dn] * src16;
     cpu->D[dn] = result;
-    cpu->SR = (cpu->SR & ~0x1Fu) | ccr_logic(result, SIZE_LONG);
+    cpu->SR = (cpu->SR & ~0x0Fu) | ccr_logic(result, SIZE_LONG);
     return mulu_w_cycles(src16);
 }
 
@@ -82,7 +82,7 @@ static u32 handler_muls_w(M68020State *cpu, u16 opword) {
     u16 src16 = (u16)src_val;
     s32 result = (s32)(s16)(u16)cpu->D[dn] * (s32)(s16)src16;
     cpu->D[dn] = (u32)result;
-    cpu->SR = (cpu->SR & ~0x1Fu) | ccr_logic((u32)result, SIZE_LONG);
+    cpu->SR = (cpu->SR & ~0x0Fu) | ccr_logic((u32)result, SIZE_LONG);
     return muls_w_cycles(src16);
 }
 
@@ -104,7 +104,7 @@ static u32 handler_divu_w(M68020State *cpu, u16 opword) {
     u16 remainder = (u16)(dividend % divisor);
     cpu->D[dn] = ((u32)remainder << 16) | (quotient & 0xFFFFu);
     u16 ccr = ccr_logic(quotient & 0xFFFFu, SIZE_WORD);
-    cpu->SR = (cpu->SR & ~0x1Fu) | ccr;
+    cpu->SR = (cpu->SR & ~0x0Fu) | ccr;
     return 140;
 }
 
@@ -126,7 +126,7 @@ static u32 handler_divs_w(M68020State *cpu, u16 opword) {
     s16 remainder = (s16)(dividend % divisor);
     cpu->D[dn] = ((u32)(u16)remainder << 16) | (u16)(s16)quotient;
     u16 ccr = ccr_logic((u32)(u16)(s16)quotient, SIZE_WORD);
-    cpu->SR = (cpu->SR & ~0x1Fu) | ccr;
+    cpu->SR = (cpu->SR & ~0x0Fu) | ccr;
     return 158;
 }
 
@@ -181,7 +181,7 @@ static u32 handler_mul_l(M68020State *cpu, u16 opword) {
         ccr = ccr_logic(vis, SIZE_LONG);
         if (overflow) ccr |= CCR_V;
     }
-    cpu->SR = (cpu->SR & ~0x1Fu) | ccr;
+    cpu->SR = (cpu->SR & ~0x0Fu) | ccr;
     u32 cyc = s ? muls_l_cycles(src_val, l) : mulu_l_cycles(src_val, l);
     return cyc;
 }
@@ -233,7 +233,7 @@ static u32 handler_div_l(M68020State *cpu, u16 opword) {
         if (l) cpu->D[dr] = (u32)rem;
 
         u16 ccr = ccr_logic((u32)(s32)quot, SIZE_LONG);
-        cpu->SR = (cpu->SR & ~0x1Fu) | ccr;
+        cpu->SR = (cpu->SR & ~0x0Fu) | ccr;
     } else {
         /* Unsigned divide */
         u64 dividend = l
@@ -252,7 +252,7 @@ static u32 handler_div_l(M68020State *cpu, u16 opword) {
         if (l) cpu->D[dr] = rem;
 
         u16 ccr = ccr_logic((u32)quot, SIZE_LONG);
-        cpu->SR = (cpu->SR & ~0x1Fu) | ccr;
+        cpu->SR = (cpu->SR & ~0x0Fu) | ccr;
     }
     return 84;
 }

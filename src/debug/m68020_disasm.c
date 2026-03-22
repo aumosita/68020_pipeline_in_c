@@ -48,14 +48,16 @@ static int fmt_ea(char *out, int outlen, u8 mode, u8 reg,
         break;
     }
     case 6: {
-        /* Brief or full extension word — just show brief format */
+        /* Brief or full extension word — show brief format with scale */
         u16 ew = rd16(ext); eaten = 2;
         u8 xr = (ew >> 12) & 0xF;
         s8 d8 = (s8)(ew & 0xFF);
         char xtype = (ew & 0x8000) ? 'A' : 'D';
         const char *xsz = (ew & 0x0800) ? ".L" : ".W";
-        snprintf(out, outlen, "(%d,A%u,%c%u%s)", d8, reg,
-                 xtype, xr & 7, xsz);
+        u8 scale = (ew >> 9) & 3;
+        static const char *scale_str[4] = { "", "*2", "*4", "*8" };
+        snprintf(out, outlen, "(%d,A%u,%c%u%s%s)", d8, reg,
+                 xtype, xr & 7, xsz, scale_str[scale]);
         break;
     }
     case 7:
@@ -80,7 +82,10 @@ static int fmt_ea(char *out, int outlen, u8 mode, u8 reg,
             s8 d8 = (s8)(ew & 0xFF);
             char xtype = (ew & 0x8000) ? 'A' : 'D';
             u8 xr = (ew >> 12) & 7;
-            snprintf(out, outlen, "(%d,PC,%c%u)", d8, xtype, xr);
+            u8 sc = (ew >> 9) & 3;
+            static const char *sc_str[4] = { "", "*2", "*4", "*8" };
+            const char *xsz2 = (ew & 0x0800) ? ".L" : ".W";
+            snprintf(out, outlen, "(%d,PC,%c%u%s%s)", d8, xtype, xr, xsz2, sc_str[sc]);
             break;
         }
         case 4:

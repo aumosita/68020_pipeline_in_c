@@ -63,7 +63,7 @@ static u32 handler_tst(M68020State *cpu, u16 opword) {
     if (!ea_resolve(cpu, EA_SRC_MODE(opword), EA_SRC_REG(opword), sz, &src)) return 4;
     u32 val = 0;
     if (!ea_read(cpu, &src, sz, &val)) return 4;
-    cpu->SR = (cpu->SR & ~0x1Fu) | ccr_logic(val, sz);
+    cpu->SR = (cpu->SR & ~0x0Fu) | ccr_logic(val, sz);
     return 4;
 }
 
@@ -78,7 +78,7 @@ static u32 handler_tas(M68020State *cpu, u16 opword) {
     if (!ea_read(cpu, &dst, SIZE_BYTE, &val)) return 14;
 
     /* CCR update from original value */
-    cpu->SR = (cpu->SR & ~0x1Fu) | ccr_logic(val, SIZE_BYTE);
+    cpu->SR = (cpu->SR & ~0x0Fu) | ccr_logic(val, SIZE_BYTE);
 
     /* Set bit 7 */
     val |= 0x80u;
