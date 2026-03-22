@@ -96,6 +96,41 @@ void m68020_set_trace_hook(M68020State *cpu,
                             void *user);
 
 /* ------------------------------------------------------------------ */
+/* Memory Map Layer                                                    */
+/* ------------------------------------------------------------------ */
+
+typedef struct M68020MemMap M68020MemMap;
+
+/* Create/destroy a memory map */
+M68020MemMap *memmap_create(void);
+void          memmap_destroy(M68020MemMap *map);
+
+/* Add a RAM region (read/write, backed by buffer) */
+bool memmap_add_ram(M68020MemMap *map, u32 base, u32 size,
+                    u8 *buffer, u32 wait_states);
+
+/* Add a ROM region (read-only, writes silently ignored) */
+bool memmap_add_rom(M68020MemMap *map, u32 base, u32 size,
+                    const u8 *buffer, u32 wait_states);
+
+/* Add an I/O region (custom read/write callbacks) */
+bool memmap_add_io(M68020MemMap *map, u32 base, u32 size,
+                   BusResult (*rd)(void *ctx, u32 offset, BusSize size, u32 *val),
+                   BusResult (*wr)(void *ctx, u32 offset, BusSize size, u32 val),
+                   void *ctx, u32 wait_states);
+
+/* Set interrupt acknowledge handler */
+void memmap_set_iack(M68020MemMap *map,
+                     u8 (*iack)(void *ctx, u8 level), void *ctx);
+
+/* Set reset peripherals handler */
+void memmap_set_reset(M68020MemMap *map,
+                      void (*reset)(void *ctx), void *ctx);
+
+/* Get bus interface to pass to m68020_create() */
+M68020BusInterface memmap_bus_interface(M68020MemMap *map);
+
+/* ------------------------------------------------------------------ */
 /* Disassembler                                                        */
 /* ------------------------------------------------------------------ */
 

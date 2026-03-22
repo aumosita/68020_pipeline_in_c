@@ -619,6 +619,116 @@ static void test_execution_trace(void) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Test Group: Memory map system integration                          */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Simulates a mini-system:
+ *   ROM: 0x000000-0x000FFF (4 KB) — vectors + code
+ *   RAM: 0x100000-0x10FFFF (64 KB) — stack + data
+ *   I/O: 0xFF0000-0xFF00FF (256 B) — register at offset 0 (read/write)
+ *
+ * Code in ROM:
+ *   1. Write 0xCAFE to I/O register (0xFF0000)
+ *   2. Read it back into D0
+ *   3. Store D0 to RAM (0x100100)
+ *   4. STOP
+ */
+
+static u32 g_io_register = 0;
+
+static BusResult test_io_read(void *ctx, u32 offset, BusSize size, u32 *val) {
+    (void)ctx; (void)size;
+    if (offset == 0) { *val = g_io_register; return BUS_OK; }
+    *val = 0; return BUS_OK;
+}
+
+static BusResult test_io_write(void *ctx, u32 offset, BusSize size, u32 val) {
+    (void)ctx; (void)size;
+    if (offset == 0) { g_io_register = val; }
+    return BUS_OK;
+}
+
+static void test_memmap_system(void) {
+    printf("\n--- Memory map system integration ---\n");
+
+    /* ROM buffer (4 KB) */
+    static u8 rom[4096];
+    memset(rom, 0, sizeof rom);
+
+    /* Vectors in ROM */
+    /* SSP → 0x10FF00 (top of RAM) */
+    rom[0]=0x00; rom[1]=0x10; rom[2]=0xFF; rom[3]=0x00;
+    /* PC → 0x000100 (code in ROM) */
+    rom[4]=0x00; rom[5]=0x00; rom[6]=0x01; rom[7]=0x00;
+    /* vec 4 (illegal) → 0x000200 */
+    rom[16]=0x00; rom[17]=0x00; rom[18]=0x02; rom[19]=0x00;
+
+    /* Code at ROM offset 0x100: */
+    u32 p = 0x100;
+    /* MOVE.L #$CAFE,D0: 0x203C 0x0000CAFE */
+    rom[p++]=0x20; rom[p++]=0x3C;
+    rom[p++]=0x00; rom[p++]=0x00; rom[p++]=0xCA; rom[p++]=0xFE;
+    /* LEA $FF0000.L,A0: 0x41F9 0x00FF0000 */
+    rom[p++]=0x41; rom[p++]=0xF9;
+    rom[p++]=0x00; rom[p++]=0xFF; rom[p++]=0x00; rom[p++]=0x00;
+    /* MOVE.L D0,(A0) — write 0xCAFE to I/O */
+    rom[p++]=0x20; rom[p++]=0x80;
+    /* CLR.L D0 */
+    rom[p++]=0x42; rom[p++]=0x80;
+    /* MOVE.L (A0),D0 — read back from I/O */
+    rom[p++]=0x20; rom[p++]=0x10;
+    /* LEA $100100.L,A1 */
+    rom[p++]=0x43; rom[p++]=0xF9;
+    rom[p++]=0x00; rom[p++]=0x10; rom[p++]=0x01; rom[p++]=0x00;
+    /* MOVE.L D0,(A1) — store to RAM */
+    rom[p++]=0x22; rom[p++]=0x80;
+    /* STOP #$2700 */
+    rom[p++]=0x4E; rom[p++]=0x72; rom[p++]=0x27; rom[p++]=0x00;
+
+    /* Illegal handler at ROM 0x200 */
+    rom[0x200]=0x4E; rom[0x201]=0x72; rom[0x202]=0x27; rom[0x203]=0x00;
+
+    /* RAM buffer (64 KB) */
+    static u8 ram[65536];
+    memset(ram, 0, sizeof ram);
+
+    /* Reset I/O state */
+    g_io_register = 0;
+
+    /* Build memory map */
+    M68020MemMap *map = memmap_create();
+    memmap_add_rom(map, 0x000000, sizeof rom, rom, 0);
+    memmap_add_ram(map, 0x100000, sizeof ram, ram, 0);
+    memmap_add_io(map, 0xFF0000, 0x100, test_io_read, test_io_write, NULL, 0);
+
+    M68020BusInterface bus = memmap_bus_interface(map);
+    M68020State *cpu = m68020_create(&bus);
+    m68020_reset(cpu);
+    m68020_run(cpu, 500000);
+
+    u32 d0 = m68020_get_reg(cpu, REG_D0);
+    EXPECT(d0 == 0xCAFEu, "MemMap: D0=0xCAFE from I/O read-back (got 0x%X)", d0);
+    EXPECT(g_io_register == 0xCAFEu,
+           "MemMap: I/O reg=0xCAFE after write (got 0x%X)", g_io_register);
+
+    /* Check RAM at offset 0x100 (base 0x100000 → ram[0x100]) */
+    u32 ram_val = ((u32)ram[0x100]<<24)|((u32)ram[0x101]<<16)
+                 |((u32)ram[0x102]<<8)|ram[0x103];
+    EXPECT(ram_val == 0xCAFEu,
+           "MemMap: RAM[0x100100]=0xCAFE (got 0x%X)", ram_val);
+
+    EXPECT(!cpu->halted, "MemMap: CPU not halted");
+    EXPECT(cpu->stopped, "MemMap: CPU stopped (STOP executed)");
+
+    printf("  System executed in %llu cycles, %u instructions\n",
+           (unsigned long long)cpu->cycle_count, cpu->instr_count);
+
+    m68020_destroy(cpu);
+    memmap_destroy(map);
+}
+
+/* ------------------------------------------------------------------ */
 /* Main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -637,6 +747,7 @@ int main(void) {
     test_mul_l_64bit();
     test_disassembler();
     test_execution_trace();
+    test_memmap_system();
 
     printf("\n==========================================\n");
     printf("Results: %d/%d passed", g_pass, g_total);

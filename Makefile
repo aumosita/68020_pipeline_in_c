@@ -15,6 +15,7 @@ SRCS = \
     src/cpu/m68020_privileged.c \
     src/bus/m68020_bus.c \
     src/bus/m68020_bus_error.c \
+    src/bus/m68020_memmap.c \
     src/instructions/m68020_move.c \
     src/instructions/m68020_branch.c \
     src/instructions/m68020_jump.c \
