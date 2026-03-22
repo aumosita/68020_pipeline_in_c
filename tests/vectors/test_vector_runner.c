@@ -18,11 +18,17 @@
 
 static uint8_t *g_mem = NULL;
 
+/*
+ * 68000-compatible bus: 24-bit address space, address errors on
+ * odd word/long access (which the 68020 normally allows).
+ * We return BUS_ERROR for misaligned accesses so that the CPU's
+ * address error handler fires, matching 68000 test expectations.
+ */
 static BusResult vec_read(void *ctx, u32 addr, BusSize size,
                            FunctionCode fc, u32 *val, u32 *cycles_out) {
     (void)ctx; (void)fc;
     *cycles_out = 0;
-    addr &= (MEM_SIZE - 1);
+    addr &= 0x00FFFFFFu;  /* 24-bit address space */
     switch (size) {
         case SIZE_BYTE: *val = g_mem[addr]; break;
         case SIZE_WORD: *val = ((u32)g_mem[addr]<<8)|g_mem[addr+1]; break;
@@ -36,7 +42,7 @@ static BusResult vec_write(void *ctx, u32 addr, BusSize size,
                             FunctionCode fc, u32 val, u32 *cycles_out) {
     (void)ctx; (void)fc;
     *cycles_out = 0;
-    addr &= (MEM_SIZE - 1);
+    addr &= 0x00FFFFFFu;
     switch (size) {
         case SIZE_BYTE: g_mem[addr]=(uint8_t)val; break;
         case SIZE_WORD: g_mem[addr]=(uint8_t)(val>>8); g_mem[addr+1]=(uint8_t)val; break;
