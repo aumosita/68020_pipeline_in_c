@@ -505,6 +505,120 @@ static void test_mul_l_64bit(void) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Test Group: Disassembler verification                              */
+/* ------------------------------------------------------------------ */
+
+static void test_disassembler(void) {
+    printf("\n--- Disassembler output verification ---\n");
+
+    char buf[128];
+    int len;
+
+    /* NOP = 0x4E71 */
+    { u8 code[] = {0x4E,0x71}; len = m68020_disasm(code, 0, buf, sizeof buf);
+      EXPECT(len == 2, "NOP: len=2 (got %d)", len);
+      EXPECT(strstr(buf, "NOP") != NULL, "NOP: contains 'NOP' (%s)", buf); }
+
+    /* MOVEQ #42,D3 = 0x762A */
+    { u8 code[] = {0x76,0x2A}; len = m68020_disasm(code, 0, buf, sizeof buf);
+      EXPECT(len == 2, "MOVEQ: len=2 (got %d)", len);
+      EXPECT(strstr(buf, "MOVEQ") != NULL, "MOVEQ: contains 'MOVEQ' (%s)", buf);
+      EXPECT(strstr(buf, "D3") != NULL, "MOVEQ: contains 'D3' (%s)", buf); }
+
+    /* BRA.B +6 = 0x6006 at PC=0x100 → target 0x108 */
+    { u8 code[] = {0x60,0x06}; len = m68020_disasm(code, 0x100, buf, sizeof buf);
+      EXPECT(len == 2, "BRA.B: len=2 (got %d)", len);
+      EXPECT(strstr(buf, "BRA") != NULL, "BRA: contains 'BRA' (%s)", buf); }
+
+    /* MOVE.L #$12345678,D0 = 0x203C 12345678 */
+    { u8 code[] = {0x20,0x3C,0x12,0x34,0x56,0x78};
+      len = m68020_disasm(code, 0, buf, sizeof buf);
+      EXPECT(len == 6, "MOVE.L #imm: len=6 (got %d)", len);
+      EXPECT(strstr(buf, "MOVE") != NULL, "MOVE.L: contains 'MOVE' (%s)", buf); }
+
+    /* RTS = 0x4E75 */
+    { u8 code[] = {0x4E,0x75}; len = m68020_disasm(code, 0, buf, sizeof buf);
+      EXPECT(strstr(buf, "RTS") != NULL, "RTS: contains 'RTS' (%s)", buf); }
+
+    /* ADDQ.L #1,D0 = 0x5280 */
+    { u8 code[] = {0x52,0x80}; len = m68020_disasm(code, 0, buf, sizeof buf);
+      EXPECT(strstr(buf, "ADDQ") != NULL, "ADDQ: contains 'ADDQ' (%s)", buf); }
+
+    /* LEA $1234.W,A0 = 0x41F8 0x1234 */
+    { u8 code[] = {0x41,0xF8,0x12,0x34};
+      len = m68020_disasm(code, 0, buf, sizeof buf);
+      EXPECT(len == 4, "LEA: len=4 (got %d)", len);
+      EXPECT(strstr(buf, "LEA") != NULL, "LEA: contains 'LEA' (%s)", buf); }
+
+    /* JSR (A0) = 0x4E90 */
+    { u8 code[] = {0x4E,0x90}; len = m68020_disasm(code, 0, buf, sizeof buf);
+      EXPECT(strstr(buf, "JSR") != NULL, "JSR: contains 'JSR' (%s)", buf); }
+
+    /* DIVU.W D1,D0 = 0x80C1 */
+    { u8 code[] = {0x80,0xC1}; len = m68020_disasm(code, 0, buf, sizeof buf);
+      EXPECT(strstr(buf, "DIVU") != NULL, "DIVU: contains 'DIVU' (%s)", buf); }
+
+    /* MULS.W D1,D0 = 0xC1C1 */
+    { u8 code[] = {0xC1,0xC1}; len = m68020_disasm(code, 0, buf, sizeof buf);
+      EXPECT(strstr(buf, "MULS") != NULL, "MULS: contains 'MULS' (%s)", buf); }
+
+    /* LSR.L #1,D0 = 0xE288 */
+    { u8 code[] = {0xE2,0x88}; len = m68020_disasm(code, 0, buf, sizeof buf);
+      EXPECT(strstr(buf, "LSR") != NULL, "LSR: contains 'LSR' (%s)", buf); }
+
+    /* STOP #$2700 = 0x4E72 0x2700 */
+    { u8 code[] = {0x4E,0x72,0x27,0x00};
+      len = m68020_disasm(code, 0, buf, sizeof buf);
+      EXPECT(len == 4, "STOP: len=4 (got %d)", len);
+      EXPECT(strstr(buf, "STOP") != NULL, "STOP: contains 'STOP' (%s)", buf); }
+}
+
+/* ------------------------------------------------------------------ */
+/* Test Group: Execution trace                                        */
+/* ------------------------------------------------------------------ */
+
+static void test_execution_trace(void) {
+    printf("\n--- Execution trace recording ---\n");
+
+    m68020_trace_init(256);
+
+    FlatBus b; memset(&b, 0, sizeof b);
+    uint8_t *m = b.mem;
+    m[0]=0x00;m[1]=0x00;m[2]=0x80;m[3]=0x00;
+    m[4]=0x00;m[5]=0x00;m[6]=0x01;m[7]=0x00;
+    m[16]=0x00;m[17]=0x00;m[18]=0x02;m[19]=0x00;
+
+    /* Code: 5 MOVEQs then STOP */
+    m[0x100]=0x70; m[0x101]=0x01;  /* MOVEQ #1,D0 */
+    m[0x102]=0x72; m[0x103]=0x02;  /* MOVEQ #2,D1 */
+    m[0x104]=0x74; m[0x105]=0x03;  /* MOVEQ #3,D2 */
+    m[0x106]=0x76; m[0x107]=0x04;  /* MOVEQ #4,D3 */
+    m[0x108]=0x78; m[0x109]=0x05;  /* MOVEQ #5,D4 */
+    m[0x10A]=0x4E; m[0x10B]=0x72; m[0x10C]=0x27; m[0x10D]=0x00; /* STOP */
+
+    m[0x200]=0x4E;m[0x201]=0x72;m[0x202]=0x27;m[0x203]=0x00;
+
+    M68020BusInterface bus = {
+        .read=flat_read,.write=flat_write,.iack=flat_iack,.ctx=&b
+    };
+    M68020State *cpu = m68020_create(&bus);
+    m68020_reset(cpu);
+    m68020_trace_enable(cpu);
+    m68020_run(cpu, 100000);
+    m68020_trace_disable(cpu);
+
+    u32 count = m68020_trace_count();
+    EXPECT(count >= 5, "Trace recorded >= 5 entries (got %u)", count);
+
+    /* Dump trace to stdout for visual verification */
+    printf("  Trace dump (last 6 entries):\n");
+    m68020_trace_dump(stdout, 6, b.mem, sizeof b.mem);
+
+    m68020_destroy(cpu);
+    m68020_trace_free();
+}
+
+/* ------------------------------------------------------------------ */
 /* Main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -521,6 +635,8 @@ int main(void) {
     test_memory_store_load();
     test_div_edge_cases();
     test_mul_l_64bit();
+    test_disassembler();
+    test_execution_trace();
 
     printf("\n==========================================\n");
     printf("Results: %d/%d passed", g_pass, g_total);

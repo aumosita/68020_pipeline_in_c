@@ -1,6 +1,7 @@
 #pragma once
 
 #include "m68020_types.h"
+#include <stdio.h>
 
 /* Forward declarations */
 typedef struct M68020State      M68020State;
@@ -93,3 +94,34 @@ void m68020_set_sr(M68020State *cpu, u16 sr);
 void m68020_set_trace_hook(M68020State *cpu,
                             void (*hook)(M68020State *, void *),
                             void *user);
+
+/* ------------------------------------------------------------------ */
+/* Disassembler                                                        */
+/* ------------------------------------------------------------------ */
+
+/* Disassemble one instruction at mem[0..].
+ * pc is the address for branch target display.
+ * Returns instruction length in bytes. */
+int m68020_disasm(const u8 *mem, u32 pc, char *buf, int buflen);
+
+/* ------------------------------------------------------------------ */
+/* Execution Trace                                                     */
+/* ------------------------------------------------------------------ */
+
+/* Allocate a trace ring buffer with `capacity` entries */
+void m68020_trace_init(u32 capacity);
+
+/* Free trace buffer */
+void m68020_trace_free(void);
+
+/* Attach trace recording to CPU (uses trace_hook) */
+void m68020_trace_enable(M68020State *cpu);
+
+/* Detach trace recording */
+void m68020_trace_disable(M68020State *cpu);
+
+/* Dump last n entries to file, disassembling from mem */
+void m68020_trace_dump(FILE *out, u32 n, const u8 *mem, u32 mem_size);
+
+/* Number of entries currently in the trace buffer */
+u32 m68020_trace_count(void);
