@@ -60,9 +60,10 @@ static BusResult raw_write(M68020State *cpu, u32 addr, BusSize size,
 /* ------------------------------------------------------------------ */
 
 BusResult cpu_read_byte(M68020State *cpu, u32 addr, u8 *val) {
+    FunctionCode fc = cpu_data_fc(cpu);
     u32 raw;
-    if (raw_read(cpu, addr, SIZE_BYTE, cpu_data_fc(cpu), &raw) != BUS_OK) {
-        exception_bus_error(cpu, addr, false, 0);
+    if (raw_read(cpu, addr, SIZE_BYTE, fc, &raw) != BUS_OK) {
+        exception_bus_error(cpu, addr, false, SSW_DATA(fc, SIZE_BYTE));
         return BUS_ERROR;
     }
     *val = (u8)raw;
@@ -74,9 +75,10 @@ BusResult cpu_read_word(M68020State *cpu, u32 addr, u16 *val) {
         exception_address_error(cpu, addr, false);
         return BUS_ERROR;
     }
+    FunctionCode fc = cpu_data_fc(cpu);
     u32 raw;
-    if (raw_read(cpu, addr, SIZE_WORD, cpu_data_fc(cpu), &raw) != BUS_OK) {
-        exception_bus_error(cpu, addr, false, 0);
+    if (raw_read(cpu, addr, SIZE_WORD, fc, &raw) != BUS_OK) {
+        exception_bus_error(cpu, addr, false, SSW_DATA(fc, SIZE_WORD));
         return BUS_ERROR;
     }
     *val = (u16)raw;
@@ -91,11 +93,11 @@ BusResult cpu_read_long(M68020State *cpu, u32 addr, u32 *val) {
         u32 hi, lo;
         cpu->cycle_count += 2;
         if (raw_read(cpu, addr,     SIZE_WORD, fc, &hi) != BUS_OK) {
-            exception_bus_error(cpu, addr, false, 0);
+            exception_bus_error(cpu, addr, false, SSW_DATA(fc, SIZE_LONG));
             return BUS_ERROR;
         }
         if (raw_read(cpu, addr + 2, SIZE_WORD, fc, &lo) != BUS_OK) {
-            exception_bus_error(cpu, addr + 2, false, 0);
+            exception_bus_error(cpu, addr + 2, false, SSW_DATA(fc, SIZE_LONG));
             return BUS_ERROR;
         }
         *val = ((u32)(u16)hi << 16) | (u16)lo;
@@ -104,7 +106,7 @@ BusResult cpu_read_long(M68020State *cpu, u32 addr, u32 *val) {
 
     u32 raw;
     if (raw_read(cpu, addr, SIZE_LONG, fc, &raw) != BUS_OK) {
-        exception_bus_error(cpu, addr, false, 0);
+        exception_bus_error(cpu, addr, false, SSW_DATA(fc, SIZE_LONG));
         return BUS_ERROR;
     }
     *val = raw;
@@ -116,8 +118,9 @@ BusResult cpu_read_long(M68020State *cpu, u32 addr, u32 *val) {
 /* ------------------------------------------------------------------ */
 
 BusResult cpu_write_byte(M68020State *cpu, u32 addr, u8 val) {
-    if (raw_write(cpu, addr, SIZE_BYTE, cpu_data_fc(cpu), val) != BUS_OK) {
-        exception_bus_error(cpu, addr, true, 0);
+    FunctionCode fc = cpu_data_fc(cpu);
+    if (raw_write(cpu, addr, SIZE_BYTE, fc, val) != BUS_OK) {
+        exception_bus_error(cpu, addr, true, SSW_DATA(fc, SIZE_BYTE));
         return BUS_ERROR;
     }
     return BUS_OK;
@@ -128,8 +131,9 @@ BusResult cpu_write_word(M68020State *cpu, u32 addr, u16 val) {
         exception_address_error(cpu, addr, true);
         return BUS_ERROR;
     }
-    if (raw_write(cpu, addr, SIZE_WORD, cpu_data_fc(cpu), val) != BUS_OK) {
-        exception_bus_error(cpu, addr, true, 0);
+    FunctionCode fc = cpu_data_fc(cpu);
+    if (raw_write(cpu, addr, SIZE_WORD, fc, val) != BUS_OK) {
+        exception_bus_error(cpu, addr, true, SSW_DATA(fc, SIZE_WORD));
         return BUS_ERROR;
     }
     return BUS_OK;
@@ -142,18 +146,18 @@ BusResult cpu_write_long(M68020State *cpu, u32 addr, u32 val) {
         /* Misaligned long write: split into two word writes */
         cpu->cycle_count += 2;
         if (raw_write(cpu, addr,     SIZE_WORD, fc, val >> 16) != BUS_OK) {
-            exception_bus_error(cpu, addr, true, 0);
+            exception_bus_error(cpu, addr, true, SSW_DATA(fc, SIZE_LONG));
             return BUS_ERROR;
         }
         if (raw_write(cpu, addr + 2, SIZE_WORD, fc, val & 0xFFFFu) != BUS_OK) {
-            exception_bus_error(cpu, addr + 2, true, 0);
+            exception_bus_error(cpu, addr + 2, true, SSW_DATA(fc, SIZE_LONG));
             return BUS_ERROR;
         }
         return BUS_OK;
     }
 
     if (raw_write(cpu, addr, SIZE_LONG, fc, val) != BUS_OK) {
-        exception_bus_error(cpu, addr, true, 0);
+        exception_bus_error(cpu, addr, true, SSW_DATA(fc, SIZE_LONG));
         return BUS_ERROR;
     }
     return BUS_OK;
@@ -180,7 +184,7 @@ BusResult cpu_fetch_word(M68020State *cpu, u32 addr, u16 *val) {
     FunctionCode fc = cpu_prog_fc(cpu);
 
     if (raw_read(cpu, aligned, SIZE_LONG, fc, &longword) != BUS_OK) {
-        exception_bus_error(cpu, addr, false, 0);
+        exception_bus_error(cpu, addr, false, SSW_IFETCH(fc, SIZE_LONG));
         return BUS_ERROR;
     }
 

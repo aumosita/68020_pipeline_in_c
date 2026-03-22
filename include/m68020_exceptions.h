@@ -71,6 +71,39 @@ typedef enum {
 } FrameFormat;
 
 /* ------------------------------------------------------------------ */
+/* SSW (Special Status Word) construction macros                       */
+/* ------------------------------------------------------------------ */
+/*
+ * MC68020 SSW bit layout:
+ *   Bits 12-10: FC2-FC0 (function code of faulted bus cycle)
+ *   Bit  8:     RW (1=read, 0=write) — set by push_format_b
+ *   Bit  6:     RM (1=read-modify-write cycle, e.g. TAS/CAS)
+ *   Bit  5:     DF (1=data fault, 0=instruction fetch fault)
+ *   Bits  1-0:  SIZE (00=reserved, 01=byte, 10=word, 11=long)
+ */
+#define SSW_FC(fc)     (((u16)(fc) & 7u) << 10)
+#define SSW_RM         (1u << 6)
+#define SSW_DF         (1u << 5)
+#define SSW_SIZE_BYTE  (1u << 0)
+#define SSW_SIZE_WORD  (2u << 0)
+#define SSW_SIZE_LONG  (3u << 0)
+
+/* Convert BusSize to SSW size bits */
+static inline u16 ssw_size(BusSize sz) {
+    switch (sz) {
+        case SIZE_BYTE: return SSW_SIZE_BYTE;
+        case SIZE_WORD: return SSW_SIZE_WORD;
+        case SIZE_LONG: return SSW_SIZE_LONG;
+    }
+    return 0;
+}
+
+/* Build SSW for a data access fault */
+#define SSW_DATA(fc, sz)     (SSW_FC(fc) | SSW_DF | ssw_size(sz))
+/* Build SSW for an instruction fetch fault */
+#define SSW_IFETCH(fc, sz)   (SSW_FC(fc) | ssw_size(sz))
+
+/* ------------------------------------------------------------------ */
 /* Functions (declared in m68020_internal.h; repeated here for callers)*/
 /* ------------------------------------------------------------------ */
 

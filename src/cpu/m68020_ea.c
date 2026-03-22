@@ -145,8 +145,8 @@ bool ea_resolve(M68020State *cpu, u8 mode, u8 reg,
 
                 u32 ptr = 0;
                 if (cpu_read_long(cpu, intermediate, &ptr) != BUS_OK) {
-                    exception_bus_error(cpu, intermediate, false, 0);
-                    return false;
+                    /* Bus error during memory indirect — data read */
+                    return false;  /* exception already raised by cpu_read_long */
                 }
 
                 /* Outer displacement — consumed AFTER memory read */
@@ -249,8 +249,7 @@ bool ea_resolve(M68020State *cpu, u8 mode, u8 reg,
 
                 u32 ptr = 0;
                 if (cpu_read_long(cpu, intermediate, &ptr) != BUS_OK) {
-                    exception_bus_error(cpu, intermediate, false, 0);
-                    return false;
+                    return false;  /* exception already raised by cpu_read_long */
                 }
 
                 s32 od = 0;
@@ -361,7 +360,12 @@ bool ea_write(M68020State *cpu, const EADesc *ea, BusSize size, u32 val) {
         }
         break;
     case EAK_An:
-        /* MOVEA always writes the full 32-bit value (sign-extended for .W) */
+        /* Byte writes to An are illegal on 68020 */
+        if (size == SIZE_BYTE) {
+            exception_process(cpu, VEC_ILLEGAL_INSN);
+            return false;
+        }
+        /* MOVEA writes the full 32-bit value (sign-extended for .W) */
         cpu->A[ea->reg] = val;
         break;
     case EAK_Imm:

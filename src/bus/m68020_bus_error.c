@@ -46,7 +46,8 @@ static void push_format_b(M68020State *cpu, u32 vector,
     }
     cpu->SR = new_sr & SR_VALID_MASK;
 
-    /* Build SSW: bit 8 = RW (1=read, 0=write); caller may supply extra bits */
+    /* SSW: caller provides FC, DF, SIZE bits; we add the RW bit here.
+     * Bit 8: RW = 1 for read, 0 for write. */
     u16 full_ssw = (u16)(ssw | (is_write ? 0x0000u : 0x0100u));
 
     /* Push the frame from word 45 down to word 0.

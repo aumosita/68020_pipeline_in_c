@@ -302,6 +302,22 @@ static u32 handler_unpk(M68020State *cpu, u16 opword) {
 }
 
 /* ------------------------------------------------------------------ */
+/* BKPT — Breakpoint                                                   */
+/* ------------------------------------------------------------------ */
+/*
+ * Encoding: 0100 1000 0100 1 vvv  (0x4848 | vector)
+ * On the real 68020 this triggers a breakpoint bus cycle; external
+ * hardware responds with an instruction word to execute.
+ * In emulation: raise an illegal instruction exception (vector 4),
+ * which the debugger can intercept via the trace hook.
+ */
+static u32 handler_bkpt(M68020State *cpu, u16 opword) {
+    (void)opword;
+    exception_process(cpu, VEC_ILLEGAL_INSN);
+    return 4;
+}
+
+/* ------------------------------------------------------------------ */
 /* Handler installer                                                   */
 /* ------------------------------------------------------------------ */
 
@@ -356,6 +372,10 @@ void m68020_misc_install_handlers(InsnHandler *t) {
         if (mode == EA_MODE_EXT && (ea & 7u) == EA_EXT_IMM) continue;
         t[0x4840u | ea] = handler_pea;
     }
+
+    /* BKPT: 0100 1000 0100 1 vvv (0x4848-0x484F) */
+    for (u32 v = 0; v < 8; v++)
+        t[0x4848u | v] = handler_bkpt;
 
     /* NBCD: 0100 1000 00 ea */
     for (u32 ea = 0; ea < 64; ea++)

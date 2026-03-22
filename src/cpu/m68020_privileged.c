@@ -208,7 +208,8 @@ static u32 handler_moves(M68020State *cpu, u16 opword) {
                                       (FunctionCode)(cpu->SFC & 7u), &val, &cyc);
         cpu->cycle_count += cyc;
         if (res != BUS_OK) {
-            exception_bus_error(cpu, addr, false, 0);
+            FunctionCode sfc = (FunctionCode)(cpu->SFC & 7u);
+            exception_bus_error(cpu, addr, false, SSW_DATA(sfc, sz));
             return 8;
         }
         if (sz == SIZE_WORD && is_an)
@@ -230,7 +231,8 @@ static u32 handler_moves(M68020State *cpu, u16 opword) {
                                        (FunctionCode)(cpu->DFC & 7u), val, &cyc);
         cpu->cycle_count += cyc;
         if (res != BUS_OK) {
-            exception_bus_error(cpu, addr, true, 0);
+            FunctionCode dfc = (FunctionCode)(cpu->DFC & 7u);
+            exception_bus_error(cpu, addr, true, SSW_DATA(dfc, sz));
             return 8;
         }
     }
