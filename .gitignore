@@ -17,3 +17,16 @@ test_runner.dSYM/
 .idea/
 *.swp
 *~
+*.ROM
+*.rom
+maclc
+ab_test
+ab_sequence
+test_runner
+test_systematic
+test_vector_runner
+*.dSYM
+.DS_Store
+*.o
+*.d
+*.a

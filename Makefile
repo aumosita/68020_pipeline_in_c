@@ -38,10 +38,11 @@ LIB  = libm68020.a
 TEST = test_runner
 TEST_SYS = test_systematic
 TEST_VEC = test_vector_runner
+MACLC = maclc
 
 .PHONY: all clean test test-all test-vectors
 
-all: $(TEST) $(TEST_SYS) $(TEST_VEC)
+all: $(TEST) $(TEST_SYS) $(TEST_VEC) $(MACLC)
 
 $(LIB): $(OBJS)
 	ar rcs $@ $^
@@ -61,6 +62,9 @@ $(TEST_VEC): tests/vectors/test_vector_runner.c $(LIB)
 test: $(TEST) $(TEST_SYS)
 	./$(TEST)
 	./$(TEST_SYS)
+
+$(MACLC): sys/mac_lc.c frontend/maclc_main.c $(LIB)
+	$(CC) $(CFLAGS) -Isys -o $@ frontend/maclc_main.c sys/mac_lc.c -L. -lm68020
 
 test-vectors: $(TEST_VEC)
 	python3 tests/vectors/run_vectors.py
