@@ -135,10 +135,10 @@ void m68020_trace_dump(FILE *out, u32 n, const u8 *mem, u32 mem_size) {
         if (e->pc < mem_size - 8)
             m68020_disasm(mem + e->pc, e->pc, disasm, sizeof disasm);
 
-        fprintf(out, "%6llu  %08X  %04X  %-30s  D0=%08X D1=%08X A7=%08X SR=%04X\n",
+        fprintf(out, "%6llu  %08X  %04X  %-30s  D7=%08X D0=%08X A7=%08X SR=%04X\n",
                 (unsigned long long)e->cycle,
                 e->pc, e->opword, disasm,
-                e->d[0], e->d[1], e->a[7], e->sr);
+                e->d[7], e->d[0], e->a[7], e->sr);
     }
 }
 

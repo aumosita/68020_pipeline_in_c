@@ -103,15 +103,24 @@ static BusResult overlay_read(void *ctx, u32 addr, BusSize size,
      * MAME v8.cpp: overlay is disabled after first access at 0x000000-0x0FFFFF
      * (the rom_switch_r handler). We disable after reading the reset vectors. */
     if (sys->rom_overlay && addr < sys->rom_size) {
-        switch (size) {
-        case SIZE_BYTE: *val = sys->rom[addr]; break;
-        case SIZE_WORD: *val = ((u32)sys->rom[addr]<<8)|sys->rom[addr+1]; break;
-        case SIZE_LONG: *val = ((u32)sys->rom[addr]<<24)|((u32)sys->rom[addr+1]<<16)
-                              |((u32)sys->rom[addr+2]<<8)|sys->rom[addr+3]; break;
+        /* ROM overlay active: ROM appears at address 0.
+         * But ROM writes vectors and data to RAM at these addresses.
+         * If RAM has been written (non-zero), read from RAM instead.
+         * This lets ROM set exception vectors while still fetching
+         * code from the overlay. */
+        bool use_ram = false;
+        if (addr < sys->ram_size) {
+            for (u32 i = 0; i < (u32)size && addr + i < sys->ram_size; i++) {
+                if (sys->ram[addr + i] != 0) { use_ram = true; break; }
+            }
         }
-        /* Keep overlay active until ROM code explicitly disables it
-         * via VIA Port B write. ROM code starts at low addresses (e.g. 0x2A)
-         * and needs overlay to read its own code from ROM at address 0. */
+        const u8 *src = use_ram ? sys->ram : sys->rom;
+        switch (size) {
+        case SIZE_BYTE: *val = src[addr]; break;
+        case SIZE_WORD: *val = ((u32)src[addr]<<8)|src[addr+1]; break;
+        case SIZE_LONG: *val = ((u32)src[addr]<<24)|((u32)src[addr+1]<<16)
+                              |((u32)src[addr+2]<<8)|src[addr+3]; break;
+        }
         return BUS_OK;
     }
 
