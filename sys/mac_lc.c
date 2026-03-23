@@ -99,7 +99,9 @@ static BusResult overlay_read(void *ctx, u32 addr, BusSize size,
     *cycles_out = 0;
     (void)fc;
 
-    /* ROM overlay: addresses 0-ROM_SIZE read from ROM */
+    /* ROM overlay: ROM appears at address 0 during reset.
+     * MAME v8.cpp: overlay is disabled after first access at 0x000000-0x0FFFFF
+     * (the rom_switch_r handler). We disable after reading the reset vectors. */
     if (sys->rom_overlay && addr < sys->rom_size) {
         switch (size) {
         case SIZE_BYTE: *val = sys->rom[addr]; break;
@@ -107,6 +109,9 @@ static BusResult overlay_read(void *ctx, u32 addr, BusSize size,
         case SIZE_LONG: *val = ((u32)sys->rom[addr]<<24)|((u32)sys->rom[addr+1]<<16)
                               |((u32)sys->rom[addr+2]<<8)|sys->rom[addr+3]; break;
         }
+        /* Keep overlay active until ROM code explicitly disables it
+         * via VIA Port B write. ROM code starts at low addresses (e.g. 0x2A)
+         * and needs overlay to read its own code from ROM at address 0. */
         return BUS_OK;
     }
 
@@ -259,8 +264,11 @@ MacLC *maclc_create(const char *rom_path, u32 ram_mb) {
                   io_stub_read, io_stub_write, sys, 0);
     memmap_add_io(sys->memmap, MAC_VDAC_BASE, MAC_VDAC_SIZE,
                   io_stub_read, io_stub_write, sys, 0);
-    memmap_add_io(sys->memmap, MAC_V8_BASE, MAC_V8_SIZE,
+    memmap_add_io(sys->memmap, MAC_PSEUDOVIA_BASE, MAC_PSEUDOVIA_SIZE,
                   io_stub_read, io_stub_write, sys, 0);
+
+    /* VRAM */
+    memmap_add_ram(sys->memmap, MAC_VRAM_BASE, MAC_VRAM_SIZE, sys->vram, 0);
 
     /* NOTE: Unmapped I/O addresses (0x50028000+) intentionally NOT registered.
      * Mac LC ROM probes NuBus/PDS slot addresses during hardware detection.
