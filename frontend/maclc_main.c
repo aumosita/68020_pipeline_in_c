@@ -51,7 +51,7 @@ int main(int argc, char **argv) {
     printf("  Initial PC:  0x%08X\n\n", pc);
 
     /* Enable trace */
-    m68020_trace_init(1024);
+    m68020_trace_init(4096);
     m68020_trace_enable(sys->cpu);
 
     /* Execute */
@@ -91,7 +91,7 @@ int main(int argc, char **argv) {
     printf("\n--- Execution Trace (last 20) ---\n");
     /* Need to pass ROM as memory for disassembly */
     if (sys->rom_overlay) {
-        m68020_trace_dump(stdout, 20, sys->rom, sys->rom_size);
+        m68020_trace_dump(stdout, 100, sys->rom, sys->rom_size);
     } else {
         m68020_trace_dump(stdout, 20, sys->ram, sys->ram_size);
     }

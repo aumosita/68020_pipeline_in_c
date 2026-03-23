@@ -144,12 +144,23 @@ static BusResult overlay_read(void *ctx, u32 addr, BusSize size,
         M68020BusInterface mbus = memmap_bus_interface(sys->memmap);
         BusResult r = mbus.read(mbus.ctx, addr, size, fc, val, cycles_out);
         if (r == BUS_OK) return BUS_OK;
-        /* Unregistered I/O → bus error (device not present) */
+
+        /* Slot $F (0x50F00000-0x50FFFFFF): built-in video (V8).
+         * ROM probes for declaration ROM at offset 0x1C00.
+         * Return bus error — V8 video doesn't have a declaration ROM,
+         * the ROM knows about built-in video through other means. */
+
+        /* All other unregistered I/O → bus error */
         *val = 0;
         return BUS_ERROR;
     }
 
     /* All other unmapped addresses → bus error */
+    static int unmapped_count = 0;
+    if (unmapped_count < 20) {
+        fprintf(stderr, "UNMAPPED READ: 0x%08X (PC=0x%08X)\n", addr, sys->cpu->PC);
+        unmapped_count++;
+    }
     *val = 0;
     return BUS_ERROR;
 }
@@ -319,4 +330,8 @@ void maclc_run(MacLC *sys, u64 cycles) {
 
 void maclc_step(MacLC *sys) {
     m68020_step(sys->cpu);
+
+    /* Deassert interrupt after processing */
+    if (sys->cpu->pending_ipl > 0 && !sys->cpu->in_exception)
+        m68020_set_ipl(sys->cpu, 0);
 }
