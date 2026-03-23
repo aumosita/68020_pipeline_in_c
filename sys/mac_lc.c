@@ -103,18 +103,19 @@ static BusResult overlay_read(void *ctx, u32 addr, BusSize size,
      * MAME v8.cpp: overlay is disabled after first access at 0x000000-0x0FFFFF
      * (the rom_switch_r handler). We disable after reading the reset vectors. */
     if (sys->rom_overlay && addr < sys->rom_size) {
-        /* ROM overlay active: ROM appears at address 0.
-         * But ROM writes vectors and data to RAM at these addresses.
-         * If RAM has been written (non-zero), read from RAM instead.
-         * This lets ROM set exception vectors while still fetching
-         * code from the overlay. */
-        bool use_ram = false;
+        /* ROM overlay: ROM appears at address 0 for code execution.
+         * Writes go to RAM. Reads: use RAM if it has been written
+         * (non-zero), otherwise fall back to ROM.
+         * This allows ROM code to execute from overlay while also
+         * reading back vectors/data it wrote to RAM. */
+        const u8 *src = sys->rom;
         if (addr < sys->ram_size) {
+            bool ram_written = false;
             for (u32 i = 0; i < (u32)size && addr + i < sys->ram_size; i++) {
-                if (sys->ram[addr + i] != 0) { use_ram = true; break; }
+                if (sys->ram[addr + i] != 0) { ram_written = true; break; }
             }
+            if (ram_written) src = sys->ram;
         }
-        const u8 *src = use_ram ? sys->ram : sys->rom;
         switch (size) {
         case SIZE_BYTE: *val = src[addr]; break;
         case SIZE_WORD: *val = ((u32)src[addr]<<8)|src[addr+1]; break;
@@ -207,6 +208,24 @@ static BusResult overlay_write(void *ctx, u32 addr, BusSize size,
 static u8 maclc_iack(void *ctx, u8 level) {
     (void)ctx; (void)level;
     return 0xFF;  /* autovector */
+}
+
+static void maclc_reset_peripherals(void *ctx) {
+    MacLC *sys = (MacLC *)ctx;
+    /* RESET instruction: V8 disables ROM overlay.
+     * After this, RAM appears at address 0.
+     * ROM is accessible at 0x40800000 only.
+     * We also remap PC to the ROM's real address. */
+    if (sys->rom_overlay) {
+        u32 old_pc = sys->cpu->PC;
+        sys->rom_overlay = false;
+        /* Remap PC from overlay address to ROM real address */
+        if (old_pc < sys->rom_size) {
+            u32 new_pc = MAC_ROM_BASE + old_pc;
+            pipeline_flush(sys->cpu, new_pc);
+            sys->cpu->PC = new_pc;
+        }
+    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -305,7 +324,7 @@ MacLC *maclc_create(const char *rom_path, u32 ram_mb) {
     bus_if.read = overlay_read;
     bus_if.write = overlay_write;
     bus_if.iack = maclc_iack;
-    bus_if.reset_peripherals = NULL;
+    bus_if.reset_peripherals = maclc_reset_peripherals;
     bus_if.ctx = sys;
 
     sys->cpu = m68020_create(&bus_if);
@@ -338,14 +357,21 @@ void maclc_run(MacLC *sys, u64 cycles) {
 }
 
 void maclc_step(MacLC *sys) {
-    /* Skip init loop: if stuck at 0x2E20 after 500 instructions,
-     * force D0 bit 0 = 1 to break out of the loop */
-    static int loop_count = 0;
-    if (sys->cpu->PC >= 0x2E1A && sys->cpu->PC <= 0x2E30) {
-        loop_count++;
-        if (loop_count > 50) {
-            sys->cpu->D[0] |= 1;  /* set bit 0 → pass BTST #0,D0 */
-            loop_count = 0;
+    /* Skip init loop entirely: ROM hardware init probes NuBus slots
+     * which all fail (no cards). Jump directly past the init loop
+     * to the post-init code at ROM offset 0x00B4 (BRA $08E0).
+     * This skips device detection and goes straight to ROM checksum
+     * and memory sizing. */
+    u32 pc_off = sys->cpu->PC;
+    if (pc_off >= MAC_ROM_BASE) pc_off -= MAC_ROM_BASE;
+    static int init_visits = 0;
+    if (pc_off == 0x2E00) {
+        init_visits++;
+        if (init_visits > 1) {
+            /* Second entry to init loop — skip to post-init */
+            u32 post_init = MAC_ROM_BASE + 0x00B4;
+            pipeline_flush(sys->cpu, post_init);
+            sys->cpu->PC = post_init;
         }
     }
 
