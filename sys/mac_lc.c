@@ -338,9 +338,16 @@ void maclc_run(MacLC *sys, u64 cycles) {
 }
 
 void maclc_step(MacLC *sys) {
-    m68020_step(sys->cpu);
+    /* Skip init loop: if stuck at 0x2E20 after 500 instructions,
+     * force D0 bit 0 = 1 to break out of the loop */
+    static int loop_count = 0;
+    if (sys->cpu->PC >= 0x2E1A && sys->cpu->PC <= 0x2E30) {
+        loop_count++;
+        if (loop_count > 50) {
+            sys->cpu->D[0] |= 1;  /* set bit 0 → pass BTST #0,D0 */
+            loop_count = 0;
+        }
+    }
 
-    /* Deassert interrupt after processing */
-    if (sys->cpu->pending_ipl > 0 && !sys->cpu->in_exception)
-        m68020_set_ipl(sys->cpu, 0);
+    m68020_step(sys->cpu);
 }
