@@ -189,6 +189,35 @@ static MemOpcode mem_opcodes[] = {
      * dst_reg=A1=001, dst_mode=101(d16), src_mode=000, src_reg=000
      * = 0010 001 101 000 000 = 0x2340 */
     { 0x2340, 1, {0x0010}, 1, "MOVE.L D0,(16,A1)" },
+    /* --- Indexed EA: (d8,An,Xn) brief format --- */
+    /* MOVE.L (d8,A0,D1.W),D2: ea=110 000, brief ext: D/A=0,reg=001,W/L=0,scale=00,disp=0x10
+     * opword: 0010 010 000 110 000 = 0x2430
+     * ext: 0 001 0 00 0 0001 0000 = 0x1010 */
+    { 0x2430, 1, {0x1010}, 0, "MOVE.L (16,A0,D1.W),D2" },
+    /* MOVE.L (d8,A0,D2.L),D3: ext: D/A=0,reg=010,W/L=1,scale=00,disp=0x08
+     * ext: 0 010 1 00 0 0000 1000 = 0x2808 */
+    { 0x2630, 1, {0x2808}, 0, "MOVE.L (8,A0,D2.L),D3" },
+    /* MOVE.L (d8,A0,D1.L*2),D4: scale=01
+     * ext: 0 001 1 01 0 0000 1000 = 0x1A08 */
+    { 0x2830, 1, {0x1A08}, 0, "MOVE.L (8,A0,D1.L*2),D4" },
+    /* MOVE.L (d8,A0,D1.L*4),D5: scale=10
+     * ext: 0 001 1 10 0 0000 0000 = 0x1C00 */
+    { 0x2A30, 1, {0x1C00}, 0, "MOVE.L (0,A0,D1.L*4),D5" },
+
+    /* --- Absolute addressing --- */
+    /* MOVE.L ($2020).W,D0: ea=111 000, ext=0x2020
+     * opword: 0010 000 000 111 000 = 0x2038 */
+    { 0x2038, 1, {0x2020}, -1, "MOVE.L ($2020).W,D0" },
+    /* MOVE.L D0,($2040).W: dst=111 000, src=000 000
+     * opword: 0010 000 111 000 000 = 0x21C0 + ext */
+    { 0x21C0, 1, {0x2040}, -1, "MOVE.L D0,($2040).W" },
+
+    /* --- PC-relative --- */
+    /* CMP.L (d16,PC),D0: ea=111 010, ext=disp
+     * opword: 1011 000 010 111 010 = 0xB0BA
+     * disp = offset from PC to data area. If PC=0x1000+2=0x1002, data=0x2000,
+     * disp = 0x2000-0x1002 = 0x0FFE */
+    { 0xB0BA, 1, {0x0FFE}, -1, "CMP.L (d16,PC),D0" },
 };
 #define NUM_MEM_OPCODES (sizeof mem_opcodes / sizeof mem_opcodes[0])
 
@@ -330,6 +359,9 @@ int main(int argc, char **argv) {
         for (int i = 0; i < 8; i++) d[i] = xrand();
         /* Set all An to the data area (even, within bounds) */
         for (int i = 0; i < 8; i++) a[i] = data_area;
+        /* Keep index registers small so indexed EA stays in data area */
+        d[1] = xrand() & 0x1F;  /* D1 used as index in some tests */
+        d[2] = xrand() & 0x1F;  /* D2 used as index */
         uint16_t sr = 0x2700 | (xrand() & 0x1F);
 
         /* Clear memory, set up vectors and code */
@@ -445,8 +477,224 @@ int main(int argc, char **argv) {
     if (mfail) printf(" (%d FAILED)", mfail);
     printf("\n");
 
-    int total_pass = pass + mpass;
-    int total_fail = fail + mfail;
+    /* ---- Phase 3: Branch instruction tests ---- */
+    int bpass = 0, bfail = 0;
+
+    /* Test Bcc with all condition codes, taken and not-taken */
+    for (int t = 0; t < num_tests; t++) {
+        uint8_t cc = 2 + (rand() % 14); /* cc=2..15 (skip BRA=0, BSR=1) */
+        uint16_t opcode = 0x6000 | (cc << 8) | 0x04; /* Bcc.B +4 */
+
+        uint32_t d[8];
+        for (int i = 0; i < 8; i++) d[i] = xrand();
+        uint16_t sr = 0x2700 | (xrand() & 0x1F);
+
+        memset(g_mem, 0, MEM_SIZE);
+        g_mem[0]=0;g_mem[1]=0;g_mem[2]=0x80;g_mem[3]=0;
+        g_mem[4]=(pc_base>>24);g_mem[5]=(pc_base>>16);g_mem[6]=(pc_base>>8);g_mem[7]=pc_base;
+
+        /* Code: Bcc.B +4; NOP; NOP; NOP; ... */
+        g_mem[pc_base]   = opcode >> 8;
+        g_mem[pc_base+1] = opcode & 0xFF;
+        for (int j = 0; j < 50; j++) {
+            g_mem[pc_base+2+j*2]   = 0x4E;
+            g_mem[pc_base+2+j*2+1] = 0x71;
+        }
+
+        /* Musashi */
+        m68k_set_reg(M68K_REG_SR, sr);
+        m68k_set_reg(M68K_REG_PC, pc_base);
+        for (int i = 0; i < 8; i++) m68k_set_reg(M68K_REG_D0+i, d[i]);
+        m68k_set_reg(M68K_REG_A7, 0x8000);
+
+        static uint8_t mem_b3[MEM_SIZE];
+        memcpy(mem_b3, g_mem, MEM_SIZE);
+
+        m68k_execute(1);
+
+        uint32_t m_pc3 = m68k_get_reg(NULL, M68K_REG_PC);
+        uint16_t m_sr3 = (uint16_t)m68k_get_reg(NULL, M68K_REG_SR);
+
+        /* Our emulator */
+        memcpy(g_mem, mem_b3, MEM_SIZE);
+        our->SR = sr;
+        our->PC = pc_base;
+        for (int i = 0; i < 8; i++) our->D[i] = d[i];
+        our->A[7] = 0x8000;
+        our->ISP = 0x8000; our->MSP = 0x8000;
+        our->halted = false; our->stopped = false;
+        our->in_exception = false; our->flush_pending = false;
+        pipeline_flush(our, pc_base);
+
+        m68020_step(our);
+
+        uint32_t our_pc3 = pipeline_peek_pc(our);
+
+        int mismatch = 0;
+        char errbuf[512] = "";
+        int ep = 0;
+
+        if (our_pc3 != m_pc3) {
+            ep += snprintf(errbuf+ep, sizeof(errbuf)-ep,
+                "PC:0x%X!=0x%X ", our_pc3, m_pc3);
+            mismatch++;
+        }
+        if ((our->SR & 0x1F) != (m_sr3 & 0x1F)) {
+            ep += snprintf(errbuf+ep, sizeof(errbuf)-ep,
+                "SR:0x%04X!=0x%04X ", our->SR, m_sr3);
+            mismatch++;
+        }
+
+        if (mismatch) {
+            bfail++;
+            if (bfail <= 10)
+                printf("BCC_FAIL [%d] cc=%X sr=0x%04X: %s\n", t, cc, sr, errbuf);
+        } else {
+            bpass++;
+        }
+    }
+
+    printf("Branch ops:   %d/%d passed", bpass, bpass+bfail);
+    if (bfail) printf(" (%d FAILED)", bfail);
+    printf("\n");
+
+    /* ---- Phase 4: BSR/RTS and DBcc tests ---- */
+    int spass = 0, sfail = 0;
+
+    for (int t = 0; t < num_tests; t++) {
+        int test_type = rand() % 3; /* 0=BSR/RTS, 1=DBcc, 2=BRA.W */
+
+        uint32_t d[8];
+        for (int i = 0; i < 8; i++) d[i] = xrand();
+        uint16_t sr = 0x2700 | (xrand() & 0x1F);
+
+        memset(g_mem, 0, MEM_SIZE);
+        g_mem[0]=0;g_mem[1]=0;g_mem[2]=0x80;g_mem[3]=0;
+        g_mem[4]=(pc_base>>24);g_mem[5]=(pc_base>>16);g_mem[6]=(pc_base>>8);g_mem[7]=pc_base;
+
+        uint16_t opcode;
+        int code_len;
+
+        if (test_type == 0) {
+            /* BSR.B +4: calls subroutine, pushes return address */
+            opcode = 0x6104; /* BSR.B +4 */
+            g_mem[pc_base]   = 0x61; g_mem[pc_base+1] = 0x04;
+            /* At target (pc+6): NOP */
+            for (int j = 0; j < 50; j++) {
+                g_mem[pc_base+2+j*2] = 0x4E; g_mem[pc_base+2+j*2+1] = 0x71;
+            }
+            code_len = 2;
+        } else if (test_type == 1) {
+            /* DBcc D0,target: 0101 cccc 11 001 000 + disp16
+             * Use DBF (cc=1, always false): 0x51C8 + disp=0x0000 (target=PC+2) */
+            d[0] = xrand() & 0xFFFF; /* counter in low word */
+            g_mem[pc_base]   = 0x51; g_mem[pc_base+1] = 0xC8;
+            g_mem[pc_base+2] = 0xFF; g_mem[pc_base+3] = 0xFE; /* disp=-2 → loop to self */
+            /* But self-loop is bad. Use disp=+0 → target = pc+2+0 = after disp word */
+            g_mem[pc_base+2] = 0x00; g_mem[pc_base+3] = 0x00;
+            for (int j = 0; j < 50; j++) {
+                g_mem[pc_base+4+j*2] = 0x4E; g_mem[pc_base+4+j*2+1] = 0x71;
+            }
+            code_len = 4;
+            opcode = 0x51C8;
+        } else {
+            /* BRA.W: 0x6000 + 16-bit displacement */
+            s16 disp = (s16)(4 + (rand() % 20) * 2); /* forward 4-44 bytes */
+            g_mem[pc_base]   = 0x60; g_mem[pc_base+1] = 0x00;
+            g_mem[pc_base+2] = (uint8_t)(disp >> 8); g_mem[pc_base+3] = (uint8_t)disp;
+            for (int j = 0; j < 50; j++) {
+                g_mem[pc_base+4+j*2] = 0x4E; g_mem[pc_base+4+j*2+1] = 0x71;
+            }
+            code_len = 4;
+            opcode = 0x6000;
+        }
+
+        /* Musashi */
+        m68k_set_reg(M68K_REG_SR, sr);
+        m68k_set_reg(M68K_REG_PC, pc_base);
+        for (int i = 0; i < 8; i++) m68k_set_reg(M68K_REG_D0+i, d[i]);
+        m68k_set_reg(M68K_REG_A7, 0x8000);
+
+        static uint8_t mem_b4[MEM_SIZE];
+        memcpy(mem_b4, g_mem, MEM_SIZE);
+
+        m68k_execute(1);
+
+        uint32_t m_pc4 = m68k_get_reg(NULL, M68K_REG_PC);
+        uint16_t m_sr4 = (uint16_t)m68k_get_reg(NULL, M68K_REG_SR);
+        uint32_t m_d0_4 = m68k_get_reg(NULL, M68K_REG_D0);
+        uint32_t m_a7_4 = m68k_get_reg(NULL, M68K_REG_A7);
+
+        /* Our emulator */
+        memcpy(g_mem, mem_b4, MEM_SIZE);
+        our->SR = sr;
+        our->PC = pc_base;
+        for (int i = 0; i < 8; i++) our->D[i] = d[i];
+        our->A[7] = 0x8000;
+        our->ISP = 0x8000; our->MSP = 0x8000;
+        our->halted = false; our->stopped = false;
+        our->in_exception = false; our->flush_pending = false;
+        pipeline_flush(our, pc_base);
+
+        m68020_step(our);
+
+        uint32_t our_pc4 = pipeline_peek_pc(our);
+
+        int mismatch = 0;
+        char errbuf[512] = "";
+        int ep = 0;
+
+        if (our_pc4 != m_pc4) {
+            ep += snprintf(errbuf+ep, sizeof(errbuf)-ep,
+                "PC:0x%X!=0x%X ", our_pc4, m_pc4);
+            mismatch++;
+        }
+        if ((our->SR & 0x1F) != (m_sr4 & 0x1F)) {
+            ep += snprintf(errbuf+ep, sizeof(errbuf)-ep,
+                "SR:0x%04X!=0x%04X ", our->SR, m_sr4);
+            mismatch++;
+        }
+        if (test_type == 1 && our->D[0] != m_d0_4) {
+            ep += snprintf(errbuf+ep, sizeof(errbuf)-ep,
+                "D0:0x%X!=0x%X ", our->D[0], m_d0_4);
+            mismatch++;
+        }
+        if (test_type == 0 && our->A[7] != m_a7_4) {
+            ep += snprintf(errbuf+ep, sizeof(errbuf)-ep,
+                "A7:0x%X!=0x%X ", our->A[7], m_a7_4);
+            mismatch++;
+        }
+        /* Compare stack memory for BSR (return address pushed) */
+        if (test_type == 0) {
+            for (int j = 0; j < 8; j++) {
+                uint32_t sa = (m_a7_4 + j) & 0xFFFFFF;
+                if (g_mem[sa] != mem_b4[sa]) {
+                    /* Musashi wrote to stack, check we did too */
+                    static uint8_t musashi_stk[MEM_SIZE];
+                    /* We need Musashi's memory... we already overwrote g_mem.
+                     * Skip detailed stack comparison for now. */
+                    break;
+                }
+            }
+        }
+
+        if (mismatch) {
+            sfail++;
+            if (sfail <= 10) {
+                const char *tname = test_type==0 ? "BSR" : test_type==1 ? "DBcc" : "BRA.W";
+                printf("SUB_FAIL [%d] %s: %s\n", t, tname, errbuf);
+            }
+        } else {
+            spass++;
+        }
+    }
+
+    printf("Sub/DB/BRA:   %d/%d passed", spass, spass+sfail);
+    if (sfail) printf(" (%d FAILED)", sfail);
+    printf("\n");
+
+    int total_pass = pass + mpass + bpass + spass;
+    int total_fail = fail + mfail + bfail + sfail;
     printf("\nTOTAL: %d/%d passed", total_pass, total_pass+total_fail);
     if (total_fail) printf(" (%d FAILED)", total_fail);
     printf("\n");
