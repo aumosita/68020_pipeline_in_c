@@ -70,7 +70,12 @@ static BusResult via_write(void *ctx, u32 offset, BusSize size, u32 val) {
 
 /* Generic I/O stub: reads return 0, writes are ignored */
 static BusResult io_stub_read(void *ctx, u32 offset, BusSize size, u32 *val) {
-    (void)ctx; (void)offset; (void)size;
+    (void)ctx; (void)size;
+    static u32 last_io = 0xFFFFFFFF;
+    if (offset != last_io) {
+        fprintf(stderr, "IO_READ: offset=0x%X size=%d\n", offset, size);
+        last_io = offset;
+    }
     *val = 0;
     return BUS_OK;
 }
@@ -128,9 +133,20 @@ static BusResult overlay_read(void *ctx, u32 addr, BusSize size,
         return BUS_OK;
     }
 
-    /* I/O regions — dispatch via memory map */
+    /* I/O range: 0x50000000-0x50FFFFFF */
+    if (addr >= 0x50000000u && addr < 0x51000000u) {
+        /* Try registered I/O regions first */
+        M68020BusInterface mbus = memmap_bus_interface(sys->memmap);
+        BusResult r = mbus.read(mbus.ctx, addr, size, fc, val, cycles_out);
+        if (r == BUS_OK) return BUS_OK;
+        /* Unregistered I/O → bus error (device not present) */
+        *val = 0;
+        return BUS_ERROR;
+    }
+
+    /* All other unmapped addresses → bus error */
     *val = 0;
-    return BUS_ERROR;  /* unmapped */
+    return BUS_ERROR;
 }
 
 static BusResult overlay_write(void *ctx, u32 addr, BusSize size,
@@ -153,6 +169,12 @@ static BusResult overlay_write(void *ctx, u32 addr, BusSize size,
     /* ROM write — ignored */
     if (addr >= MAC_ROM_BASE && addr < MAC_ROM_BASE + sys->rom_size)
         return BUS_OK;
+
+    /* I/O range */
+    if (addr >= 0x50000000u && addr < 0x51000000u) {
+        M68020BusInterface mbus = memmap_bus_interface(sys->memmap);
+        return mbus.write(mbus.ctx, addr, size, fc, val, cycles_out);
+    }
 
     return BUS_ERROR;
 }
@@ -239,6 +261,12 @@ MacLC *maclc_create(const char *rom_path, u32 ram_mb) {
                   io_stub_read, io_stub_write, sys, 0);
     memmap_add_io(sys->memmap, MAC_V8_BASE, MAC_V8_SIZE,
                   io_stub_read, io_stub_write, sys, 0);
+
+    /* NOTE: Unmapped I/O addresses (0x50028000+) intentionally NOT registered.
+     * Mac LC ROM probes NuBus/PDS slot addresses during hardware detection.
+     * These must return BUS_ERROR so the ROM's bus error handler detects
+     * "no device present" and moves on.  If we return 0 instead, the ROM
+     * thinks a device exists and gets stuck trying to initialize it. */
 
     /*
      * For Phase A: use a single bus interface that handles ROM overlay
