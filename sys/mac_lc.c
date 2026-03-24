@@ -214,16 +214,40 @@ static void maclc_reset_peripherals(void *ctx) {
     MacLC *sys = (MacLC *)ctx;
     /* RESET instruction: V8 disables ROM overlay.
      * After this, RAM appears at address 0.
-     * ROM is accessible at 0x40800000 only.
-     * We also remap PC to the ROM's real address. */
+     * ROM is accessible at 0x40800000 only. */
     if (sys->rom_overlay) {
-        u32 old_pc = sys->cpu->PC;
         sys->rom_overlay = false;
+
         /* Remap PC from overlay address to ROM real address */
+        u32 old_pc = sys->cpu->PC;
         if (old_pc < sys->rom_size) {
             u32 new_pc = MAC_ROM_BASE + old_pc;
             pipeline_flush(sys->cpu, new_pc);
             sys->cpu->PC = new_pc;
+        }
+
+        /* Fix exception vectors in RAM: they were written with overlay
+         * addresses (0x00003CB6 etc.) but now need ROM real addresses
+         * (0x40803CB6). Scan vector table and add ROM base to any
+         * vector pointing into the ROM range. */
+        for (u32 vec = 0; vec < 256; vec++) {
+            u32 va = vec * 4;
+            if (va + 3 >= sys->ram_size) break;
+            u32 handler = ((u32)sys->ram[va]<<24) | ((u32)sys->ram[va+1]<<16)
+                        | ((u32)sys->ram[va+2]<<8)  |  (u32)sys->ram[va+3];
+            if (handler > 0 && handler < sys->rom_size) {
+                handler += MAC_ROM_BASE;
+                sys->ram[va]   = (u8)(handler >> 24);
+                sys->ram[va+1] = (u8)(handler >> 16);
+                sys->ram[va+2] = (u8)(handler >> 8);
+                sys->ram[va+3] = (u8)(handler);
+            }
+        }
+
+        /* Also fix A4/A5/A6 if they point to overlay addresses */
+        for (int i = 0; i < 7; i++) {
+            if (sys->cpu->A[i] > 0 && sys->cpu->A[i] < sys->rom_size)
+                sys->cpu->A[i] += MAC_ROM_BASE;
         }
     }
 }
@@ -368,7 +392,12 @@ void maclc_step(MacLC *sys) {
     if (pc_off == 0x2E00) {
         init_visits++;
         if (init_visits > 1) {
-            /* Second entry to init loop — skip to post-init */
+            /* Second entry to init loop — skip to post-init.
+             * Set up essential state: SP, D7 (hw flags), A5 (global ptr) */
+            sys->cpu->A[7] = 0x00400000;  /* SP in upper RAM area */
+            sys->cpu->ISP  = 0x00400000;
+            sys->cpu->MSP  = 0x00400000;
+            sys->cpu->D[7] = 0x00000000;  /* no hardware flags */
             u32 post_init = MAC_ROM_BASE + 0x00B4;
             pipeline_flush(sys->cpu, post_init);
             sys->cpu->PC = post_init;
